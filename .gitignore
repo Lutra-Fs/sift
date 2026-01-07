@@ -1,0 +1,29 @@
+# Rust/Cargo
+/target
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build outputs
+dist/
+build/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Test coverage
+tarpaulin-report.html
+cobertura.xml
+lcov.info

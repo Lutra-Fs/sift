@@ -1,0 +1,25 @@
+# Clippy configuration
+
+# Deny most lints by default for CI-quality checks
+warn-on-all-wildcard-imports = true
+
+# Allow specific pedantic lints that may be too noisy
+allowed-duplicate-crates = []
+
+# Max trait bounds complexity
+too-many-arguments-threshold = 7
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Type complexity threshold
+type-complexity-threshold = 250
+
+# Literal representation threshold
+literal-representation-threshold = 10
+
+# Avoid suggesting to convert things to String
+suppress-lint = "clippy::to_string_trait_impl"
+
+# Enforce documentation
+missing-docs-in-private-items = false

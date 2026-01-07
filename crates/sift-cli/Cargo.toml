@@ -1,0 +1,18 @@
+[package]
+name = "sift-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sift"
+path = "src/main.rs"
+
+[dependencies]
+sift-core = { path = "../sift-core" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

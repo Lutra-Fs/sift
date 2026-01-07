@@ -1,0 +1,18 @@
+[package]
+name = "sift-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sift-gui"
+path = "src/main.rs"
+
+[dependencies]
+sift-core = { path = "../sift-core" }
+iced = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
