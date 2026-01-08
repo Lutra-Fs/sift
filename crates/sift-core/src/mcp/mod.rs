@@ -1,6 +1,11 @@
 //! MCP (Model Context Protocol) server management
 
+pub mod schema;
+
 use serde::{Deserialize, Serialize};
+
+// Re-export the new schema types
+pub use schema::{McpConfig, McpConfigOverride, RuntimeType, TransportType};
 
 /// Represents an MCP server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

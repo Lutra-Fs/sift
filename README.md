@@ -1,99 +1,69 @@
-# Sift - MCP & Skills Manager
+# Sift
 
-A universal MCP (Model Context Protocol) server and skills manager with GUI, TUI, and CLI interfaces.
+**Sift** is a configuration and dependency manager for Model Context Protocol (MCP) servers and Agent Skills.
 
-## Features
+It acts as a "bridge" between your tools and AI clients (like Claude Desktop, Claude Code, or IDEs), ensuring that the right tools are available in the right context without manual configuration hell.
 
-- **Three Interface Modes**:
-  - **CLI**: Command-line operations (`sift install`, `sift list`, etc.)
-  - **TUI**: Terminal-based interactive interface (default when no args provided)
-  - **GUI**: Native desktop application (`sift --gui`)
+## Core Philosophy
 
-- **Configuration Scopes**:
-  - Global: System-wide configuration
-  - Per-Project Local: Project-specific, not shared
-  - Per-Project Shared: Project-specific, shared across team
+*   **Static Manager, Not Runtime Proxy**: Sift manages configuration files and downloads dependencies. It does *not* sit in the middle of the connection between the AI and the tool.
+*   **Configuration as Code**: Define your toolset in `sift.toml`. Share it with your team.
+*   **Scope-Aware**: Distinguish between global tools (personal), project tools (team-shared), and local overrides (secrets).
 
-- **Cross-Client Compatibility**:
-  - Claude Code
-  - VS Code
-  - Gemini CLI
-  - Codex
+## Architecture
 
-## Installation
+### 1. Configuration Scopes
 
-```bash
-# Clone the repository
-git clone https://github.com/lutra/sift.git
-cd sift
+Sift merges configuration from three layers to generate the final setup:
 
-# Build the project
-cargo build --release
+1.  **🌏 Global (User)**
+    *   **Path**: `~/.config/sift/sift.toml`
+    *   **Purpose**: Personal tools available everywhere (e.g., Todoist, System Info).
+    *   **Git**: Ignored.
 
-# The binary will be at target/release/sift
-```
+2.  **📁 Project (Shared)**
+    *   **Path**: `./sift.toml` (in project root)
+    *   **Purpose**: Mandatory tools for the project (e.g., Postgres connector, API Linter).
+    *   **Git**: **Committed**. Ensures all team members have the same context.
+
+3.  **🔒 Project Local (Private)**
+    *   **Path**: Defined in Global config (`~/.config/sift/sift.toml`) under `[projects."/abs/path/to/project"]`.
+    *   **Purpose**: Local overrides, secrets, or dev-only tools.
+    *   **Git**: **N/A** (Keeps project directory clean).
+
+### 2. Runtime Agnostic
+
+Sift handles the complexity of heterogeneous runtimes (Node.js, Bun, Python/uv, Docker).
+
+*   **Manifest-Driven**: Skills and MCP servers declare their requirements (e.g., "needs node >= 18").
+*   **Command Generation**: Sift translates these requirements into the correct configuration for the target client (e.g., generating the correct `node` or `uv run` commands in `claude_desktop_config.json`).
+*   **User Override**: Users can always override the execution command in `sift.toml` if specific runtime tweaks are needed.
 
 ## Usage
 
-```bash
-# Launch TUI (default)
-sift
+The `sift` binary provides multiple interfaces depending on your needs:
 
-# CLI operations
-sift install mcp server-name
-sift list skills
-sift uninstall skill skill-name
+*   **No arguments**: Launches the **TUI** interface.
+*   **Subcommands**: Standard **CLI** behavior (e.g., `sift install`).
+*   **`sift --gui` or `sift gui`**: Launches the **GUI** interface.
 
-# Set configuration scope
-sift config global
-sift config local
-sift config shared
-
-# Launch GUI
-sift --gui
-# or
-sift gui
-```
-
-## Development
+### CLI Example
 
 ```bash
-# Build all crates
-cargo build
+# Install a tool (defaults to Global)
+sift install <tool-name>
 
-# Run the main binary (TUI mode)
-cargo run
+# Install a tool for the current project (Shared)
+sift install <tool-name> --scope project
 
-# Run with CLI commands
-cargo run -- list mcp
-
-# Run TUI
-cargo run --bin sift-tui
-
-# Run GUI
-cargo run --bin sift-gui
-
-# Run clippy
-cargo clippy --all-targets --all-features
-
-# Run tests
-cargo test
-
-# Format code
-cargo fmt
+# Generate configuration for a specific client
+sift export --target claude-desktop
+sift export --target vscode
 ```
 
-## Project Structure
+## Roadmap
 
-```
-sift/
-├── crates/
-│   ├── sift-core/    # Core library
-│   ├── sift-cli/     # CLI interface (main binary)
-│   ├── sift-tui/     # TUI interface
-│   └── sift-gui/     # GUI interface
-```
-
-## License
-
-MIT OR Apache-2.0
+- [ ] **Core**: Config loader & merger (Rust)
+- [ ] **Manifest**: Define standard schema for MCP/Skill requirements
+- [ ] **Export**: Generators for Claude Desktop & VS Code
+- [ ] **CLI**: Basic install/manage commands

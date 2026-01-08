@@ -5,8 +5,17 @@
 //! - PerProjectLocal: Project-specific, not shared
 //! - PerProjectShared: Project-specific, shared across team
 
+pub mod merge;
+pub mod parser;
+pub mod schema;
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+// Re-export the new module types
+pub use schema::{ClientConfigEntry, McpConfigEntry, McpOverrideEntry, ProjectOverride, SiftConfig, SkillConfigEntry, SkillOverrideEntry};
+pub use parser::{parse_sift_toml, parse_sift_toml_str, to_toml};
+pub use merge::merge_configs;
 
 /// Configuration scope levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -1,6 +1,11 @@
 //! Skills management
 
+pub mod schema;
+
 use serde::{Deserialize, Serialize};
+
+// Re-export the new schema types
+pub use schema::{SkillConfig, SkillConfigOverride};
 
 /// Represents a skill
 #[derive(Debug, Clone, Serialize, Deserialize)]

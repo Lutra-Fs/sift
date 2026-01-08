@@ -18,8 +18,5 @@ type-complexity-threshold = 250
 # Literal representation threshold
 literal-representation-threshold = 10
 
-# Avoid suggesting to convert things to String
-suppress-lint = "clippy::to_string_trait_impl"
-
-# Enforce documentation
-missing-docs-in-private-items = false
+# Enforce documentation (false = don't require docs for private items)
+missing-docs-in-crate-items = false
