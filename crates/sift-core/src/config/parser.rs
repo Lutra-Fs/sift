@@ -9,15 +9,13 @@ pub fn parse_sift_toml(path: &Path) -> Result<SiftConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-    parse_sift_toml_str(&content).with_context(|| {
-        format!("Failed to parse config file: {}", path.display())
-    })
+    parse_sift_toml_str(&content)
+        .with_context(|| format!("Failed to parse config file: {}", path.display()))
 }
 
 /// Parse sift.toml content from string
 pub fn parse_sift_toml_str(content: &str) -> Result<SiftConfig> {
-    let config: SiftConfig = toml::from_str(content)
-        .map_err(|e| enhance_toml_error(e, content))?;
+    let config: SiftConfig = toml::from_str(content).map_err(|e| enhance_toml_error(e, content))?;
 
     // Validate configuration
     validate_config(&config)?;
@@ -79,8 +77,7 @@ fn validate_config(config: &SiftConfig) -> Result<()> {
 
 /// Serialize a configuration to TOML string
 pub fn to_toml(config: &SiftConfig) -> Result<String> {
-    toml::to_string_pretty(config)
-        .with_context(|| "Failed to serialize configuration to TOML")
+    toml::to_string_pretty(config).with_context(|| "Failed to serialize configuration to TOML")
 }
 
 #[cfg(test)]
@@ -203,7 +200,10 @@ ignore_targets = ["vscode"]
 
         assert_eq!(parsed.mcp.len(), original.mcp.len());
         assert_eq!(parsed.skill.len(), original.skill.len());
-        assert_eq!(parsed.mcp["postgres"].source, original.mcp["postgres"].source);
+        assert_eq!(
+            parsed.mcp["postgres"].source,
+            original.mcp["postgres"].source
+        );
         assert_eq!(parsed.skill["pdf"].source, original.skill["pdf"].source);
     }
 
@@ -229,10 +229,12 @@ runtime = "node"
     fn test_parse_nonexistent_file() {
         let result = parse_sift_toml(Path::new("/nonexistent/path/sift.toml"));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Failed to read config file"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to read config file")
+        );
     }
 
     #[test]

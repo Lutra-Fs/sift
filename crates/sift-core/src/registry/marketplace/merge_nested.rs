@@ -50,16 +50,14 @@ fn merge_json_deep(base: &Value, overlay: &Value) -> anyhow::Result<Value> {
                 if (key == "mcpServers" || key == "mcp_servers")
                     && let Some(base_servers) = base_map.get(key.as_str())
                 {
-                    result.insert(
-                        key.clone(),
-                        merge_mcp_servers(base_servers, overlay_value)?,
-                    );
+                    result.insert(key.clone(), merge_mcp_servers(base_servers, overlay_value)?);
                     continue;
                 }
 
                 // Recursively merge nested objects
                 if let Some(base_value) = base_map.get(key.as_str())
-                    && base_value.is_object() && overlay_value.is_object()
+                    && base_value.is_object()
+                    && overlay_value.is_object()
                 {
                     result.insert(key.clone(), merge_json_deep(base_value, overlay_value)?);
                     continue;

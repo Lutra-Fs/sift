@@ -210,12 +210,19 @@ impl MarketplaceAdapter {
 
         // Normalize to unified MarketplaceManifest
         match raw {
-            RawMarketplaceManifest::WithMetadata { name, owner, metadata, plugins } => {
+            RawMarketplaceManifest::WithMetadata {
+                name,
+                owner,
+                metadata,
+                plugins,
+            } => {
                 // Parse plugins from JSON values
                 let parsed_plugins = plugins
                     .into_iter()
-                    .map(|v| serde_json::from_value(v)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse plugin: {}", e)))
+                    .map(|v| {
+                        serde_json::from_value(v)
+                            .map_err(|e| anyhow::anyhow!("Failed to parse plugin: {}", e))
+                    })
                     .collect::<anyhow::Result<Vec<_>>>()?;
 
                 Ok(MarketplaceManifest {
@@ -229,12 +236,17 @@ impl MarketplaceAdapter {
                     plugins: parsed_plugins,
                 })
             }
-            RawMarketplaceManifest::Flat { marketplace, plugins } => {
+            RawMarketplaceManifest::Flat {
+                marketplace,
+                plugins,
+            } => {
                 // Parse plugins from JSON values
                 let parsed_plugins = plugins
                     .into_iter()
-                    .map(|v| serde_json::from_value(v)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse plugin: {}", e)))
+                    .map(|v| {
+                        serde_json::from_value(v)
+                            .map_err(|e| anyhow::anyhow!("Failed to parse plugin: {}", e))
+                    })
                     .collect::<anyhow::Result<Vec<_>>>()?;
 
                 Ok(MarketplaceManifest {
@@ -376,7 +388,11 @@ impl MarketplaceAdapter {
         // Append skill path to base source
         // "github:anthropics/skills" + "./skills/xlsx" -> "github:anthropics/skills/skills/xlsx"
         let full_source = if skill_path.starts_with("./") {
-            format!("{}/{}", base_source.trim_end_matches('/'), skill_path.trim_start_matches("./"))
+            format!(
+                "{}/{}",
+                base_source.trim_end_matches('/'),
+                skill_path.trim_start_matches("./")
+            )
         } else if skill_path.starts_with("/") {
             // Absolute path - use as-is
             skill_path.to_string()
@@ -554,7 +570,10 @@ mod tests {
         }"#;
 
         let manifest = MarketplaceAdapter::parse(json).unwrap();
-        assert_eq!(manifest.marketplace.name, Some("test-marketplace".to_string()));
+        assert_eq!(
+            manifest.marketplace.name,
+            Some("test-marketplace".to_string())
+        );
         assert_eq!(manifest.plugins.len(), 1);
         assert_eq!(manifest.plugins[0].name, "test-plugin");
     }
@@ -829,7 +848,10 @@ mod tests {
         // Find a specific plugin
         let plugin = MarketplaceAdapter::find_plugin(&manifest, "code-review");
         assert!(plugin.is_some());
-        assert_eq!(plugin.unwrap().author.as_ref().unwrap().name, "Boris Cherny");
+        assert_eq!(
+            plugin.unwrap().author.as_ref().unwrap().name,
+            "Boris Cherny"
+        );
 
         // Test that non-existent plugin returns None
         let not_found = MarketplaceAdapter::find_plugin(&manifest, "nonexistent");
@@ -1000,7 +1022,10 @@ mod tests {
         let configs = MarketplaceAdapter::plugin_to_mcp_configs(&plugin, None).unwrap();
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].1.transport, crate::mcp::TransportType::Http);
-        assert_eq!(configs[0].1.url, Some("https://example.com/mcp".to_string()));
+        assert_eq!(
+            configs[0].1.url,
+            Some("https://example.com/mcp".to_string())
+        );
     }
 
     #[test]
@@ -1026,11 +1051,13 @@ mod tests {
     #[test]
     fn test_github_url_construction() {
         // Test GitHubFetcher URL construction for nested plugin.json
-        let url = crate::registry::marketplace::github_fetcher::GitHubFetcher::construct_plugin_json_url(
-            "github:anthropics/life-sciences",
-            "./10x-genomics",
-            None,
-        ).unwrap();
+        let url =
+            crate::registry::marketplace::github_fetcher::GitHubFetcher::construct_plugin_json_url(
+                "github:anthropics/life-sciences",
+                "./10x-genomics",
+                None,
+            )
+            .unwrap();
 
         assert_eq!(
             url,
@@ -1061,7 +1088,8 @@ mod tests {
         let merged = crate::registry::marketplace::merge_nested::merge_plugin_with_nested(
             &marketplace_entry,
             &nested_plugin,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(merged.name, "10x-genomics");
         assert_eq!(merged.version, "1.0.0"); // From nested
@@ -1092,8 +1120,14 @@ mod tests {
         }"#;
 
         let manifest = MarketplaceAdapter::parse(json).unwrap();
-        assert_eq!(manifest.marketplace.name, Some("anthropic-agent-skills".to_string()));
-        assert_eq!(manifest.marketplace.description, Some("Anthropic example skills".to_string()));
+        assert_eq!(
+            manifest.marketplace.name,
+            Some("anthropic-agent-skills".to_string())
+        );
+        assert_eq!(
+            manifest.marketplace.description,
+            Some("Anthropic example skills".to_string())
+        );
         assert_eq!(manifest.plugins.len(), 1);
 
         let plugin = &manifest.plugins[0];

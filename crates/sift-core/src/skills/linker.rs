@@ -5,8 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub use crate::fs::LinkMode;
-
-const MANAGED_MARKER_FILENAME: &str = ".sift-managed.json";
+use crate::fs::tree_hash::hash_tree;
+use crate::version::LockedSkill;
 
 #[derive(Debug, Clone)]
 pub struct LinkerOptions {
@@ -21,7 +21,96 @@ pub struct LinkReport {
     pub changed: bool,
 }
 
-pub fn deliver_dir(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> anyhow::Result<LinkReport> {
+/// Deliver directory with managed install verification
+///
+/// # Parameters
+/// - `src_dir`: Source directory (cache)
+/// - `dst_dir`: Destination directory (skill install location)
+/// - `options`: Delivery options (mode, force, allow_symlink)
+/// - `existing_install`: Optional existing install record from lockfile
+/// - `expected_tree_hash`: Expected hash from lockfile (source of truth)
+///
+/// # Managed判定
+/// - dst exists but no lockfile record: hard fail (unmanaged)
+/// - dst exists with lockfile record and hash matches: skip (idempotent)
+/// - dst exists with lockfile record but hash mismatch: hard fail unless force
+///
+/// # Cache integrity check
+/// - Before delivery: hash_tree(src_dir) == expected_tree_hash
+/// - If mismatch: cache dirty error, force required to proceed
+///
+/// # Delivery
+/// - Creates directory structure + hardlinks/copy/symlinks files
+/// - Does NOT write marker files
+pub fn deliver_dir_managed(
+    src_dir: &Path,
+    dst_dir: &Path,
+    options: &LinkerOptions,
+    existing_install: Option<&LockedSkill>,
+    expected_tree_hash: &str,
+) -> anyhow::Result<LinkReport> {
+    ensure_src_dir(src_dir)?;
+    ensure_parent_dir(dst_dir)?;
+
+    // Cache integrity check (prevents pollution detection bypass)
+    let cache_hash = hash_tree(src_dir)
+        .with_context(|| format!("Failed to hash cache: {}", src_dir.display()))?;
+    if cache_hash != expected_tree_hash {
+        if !options.force {
+            anyhow::bail!(
+                "Cache is dirty: expected hash {}, got {}. Use force to proceed.",
+                expected_tree_hash,
+                cache_hash
+            );
+        }
+        // Force: proceed despite dirty cache
+    }
+
+    // Managed判定 based on lockfile record
+    if dst_dir.exists() {
+        match existing_install {
+            Some(_install) => {
+                let dst_hash = hash_tree(dst_dir)
+                    .with_context(|| format!("Failed to hash dst: {}", dst_dir.display()))?;
+                if dst_hash == expected_tree_hash {
+                    // Idempotent: already installed with correct hash
+                    return Ok(LinkReport {
+                        mode: options.mode,
+                        changed: false,
+                    });
+                }
+                // Hash mismatch: managed but modified
+                if !options.force {
+                    anyhow::bail!(
+                        "Managed install has unexpected hash (expected: {}, got: {}). Use force to override.",
+                        expected_tree_hash,
+                        dst_hash
+                    );
+                }
+                // Force: proceed with replacement
+            }
+            None => {
+                // No lockfile record: unmanaged directory
+                if !options.force {
+                    anyhow::bail!(
+                        "Destination exists but is not managed by sift: {}. Use force to override.",
+                        dst_dir.display()
+                    );
+                }
+                // Force: adopt the directory
+            }
+        }
+    }
+
+    // Proceed with delivery
+    deliver_dir(src_dir, dst_dir, options)
+}
+
+fn deliver_dir(
+    src_dir: &Path,
+    dst_dir: &Path,
+    options: &LinkerOptions,
+) -> anyhow::Result<LinkReport> {
     ensure_src_dir(src_dir)?;
     ensure_parent_dir(dst_dir)?;
 
@@ -61,7 +150,11 @@ fn ensure_symlink_allowed(options: &LinkerOptions) -> anyhow::Result<()> {
     anyhow::bail!("Symlink link mode is not allowed by client capability");
 }
 
-fn deliver_auto(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> anyhow::Result<LinkReport> {
+fn deliver_auto(
+    src_dir: &Path,
+    dst_dir: &Path,
+    options: &LinkerOptions,
+) -> anyhow::Result<LinkReport> {
     let mut hardlink_first = options.clone();
     hardlink_first.mode = LinkMode::Hardlink;
 
@@ -79,14 +172,17 @@ fn deliver_auto(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> anyh
     }
 }
 
-fn deliver_copy(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> anyhow::Result<LinkReport> {
+fn deliver_copy(
+    src_dir: &Path,
+    dst_dir: &Path,
+    options: &LinkerOptions,
+) -> anyhow::Result<LinkReport> {
     let tmp_dir = unique_temp_path(dst_dir)?;
     fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("Failed to create temp directory: {}", tmp_dir.display()))?;
 
     let result = (|| -> anyhow::Result<()> {
         copy_tree(src_dir, &tmp_dir)?;
-        write_managed_marker(&tmp_dir, LinkMode::Copy, src_dir)?;
         Ok(())
     })();
 
@@ -102,7 +198,11 @@ fn deliver_copy(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> anyh
     })
 }
 
-fn deliver_hardlink(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> anyhow::Result<LinkReport> {
+fn deliver_hardlink(
+    src_dir: &Path,
+    dst_dir: &Path,
+    options: &LinkerOptions,
+) -> anyhow::Result<LinkReport> {
     let tmp_dir = unique_temp_path(dst_dir)?;
     fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("Failed to create temp directory: {}", tmp_dir.display()))?;
@@ -110,7 +210,6 @@ fn deliver_hardlink(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> 
     let result = (|| -> anyhow::Result<()> {
         hardlink_tree(src_dir, &tmp_dir)
             .with_context(|| format!("Failed to hardlink tree from {}", src_dir.display()))?;
-        write_managed_marker(&tmp_dir, LinkMode::Hardlink, src_dir)?;
         Ok(())
     })();
 
@@ -126,7 +225,11 @@ fn deliver_hardlink(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> 
     })
 }
 
-fn deliver_symlink(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> anyhow::Result<LinkReport> {
+fn deliver_symlink(
+    src_dir: &Path,
+    dst_dir: &Path,
+    options: &LinkerOptions,
+) -> anyhow::Result<LinkReport> {
     if let Ok(target) = fs::read_link(dst_dir) {
         if same_path(&target, src_dir) {
             return Ok(LinkReport {
@@ -150,33 +253,24 @@ fn deliver_symlink(src_dir: &Path, dst_dir: &Path, options: &LinkerOptions) -> a
     })
 }
 
-fn write_managed_marker(dst_dir: &Path, mode: LinkMode, src_dir: &Path) -> anyhow::Result<()> {
-    let marker_path = dst_dir.join(MANAGED_MARKER_FILENAME);
-    let json = serde_json::json!({
-        "mode": mode.as_str(),
-        "source_path": src_dir.display().to_string(),
-    });
-    let bytes = serde_json::to_vec_pretty(&json).context("Failed to serialize managed marker")?;
-    fs::write(&marker_path, bytes)
-        .with_context(|| format!("Failed to write managed marker: {}", marker_path.display()))?;
-    Ok(())
-}
-
-fn is_managed_dir(dst_dir: &Path) -> bool {
-    dst_dir.join(MANAGED_MARKER_FILENAME).exists()
-}
-
-fn replace_dst_with_tmp(dst_dir: &Path, tmp_path: &Path, options: &LinkerOptions) -> anyhow::Result<()> {
+fn replace_dst_with_tmp(
+    dst_dir: &Path,
+    tmp_path: &Path,
+    options: &LinkerOptions,
+) -> anyhow::Result<()> {
     if dst_dir.exists() {
-        let allow_replace = options.force || is_managed_dir(dst_dir);
-        if !allow_replace {
+        if !options.force {
             anyhow::bail!(
-                "Destination already exists and is unmanaged: {}",
+                "Destination already exists: {} (use force to override)",
                 dst_dir.display()
             );
         }
-        remove_path(dst_dir)
-            .with_context(|| format!("Failed to remove existing destination: {}", dst_dir.display()))?;
+        remove_path(dst_dir).with_context(|| {
+            format!(
+                "Failed to remove existing destination: {}",
+                dst_dir.display()
+            )
+        })?;
     }
 
     fs::rename(tmp_path, dst_dir).with_context(|| {
@@ -202,9 +296,9 @@ fn unique_temp_path(dst_dir: &Path) -> anyhow::Result<PathBuf> {
     let parent = dst_dir
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Destination path has no parent: {}", dst_dir.display()))?;
-    let base = dst_dir
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Destination path has no filename: {}", dst_dir.display()))?;
+    let base = dst_dir.file_name().ok_or_else(|| {
+        anyhow::anyhow!("Destination path has no filename: {}", dst_dir.display())
+    })?;
 
     for attempt in 0u32..1000 {
         let name = if attempt == 0 {
@@ -223,12 +317,18 @@ fn unique_temp_path(dst_dir: &Path) -> anyhow::Result<PathBuf> {
         }
     }
 
-    anyhow::bail!("Failed to allocate a unique temp path for {}", dst_dir.display());
+    anyhow::bail!(
+        "Failed to allocate a unique temp path for {}",
+        dst_dir.display()
+    );
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    for entry in fs::read_dir(src).with_context(|| format!("Failed to read dir: {}", src.display()))? {
-        let entry = entry.with_context(|| format!("Failed to read dir entry: {}", src.display()))?;
+    for entry in
+        fs::read_dir(src).with_context(|| format!("Failed to read dir: {}", src.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("Failed to read dir entry: {}", src.display()))?;
         let ty = entry
             .file_type()
             .with_context(|| format!("Failed to stat dir entry: {}", entry.path().display()))?;
@@ -333,4 +433,67 @@ fn create_dir_symlink(_src_dir: &Path, _dst_link: &Path) -> std::io::Result<()> 
         std::io::ErrorKind::Unsupported,
         "Symlinks are not supported on this platform",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests for deliver_dir_managed will be in the integration test file
+    // This module only contains unit tests for internal functions
+
+    #[test]
+    fn test_is_cross_device_link_error_with_exdev() {
+        #[cfg(unix)]
+        {
+            use std::io;
+            let exdev_err = io::Error::from_raw_os_error(18); // EXDEV
+            let anyhow_err = anyhow::Error::from(exdev_err);
+            assert!(is_cross_device_link_error(&anyhow_err));
+        }
+    }
+
+    #[test]
+    fn test_replace_dst_without_force_fails_when_exists() {
+        let tmp = tempfile::tempdir().expect("tempdir should succeed");
+        let parent = tmp.path();
+        let dst_dir = parent.join("dst");
+        let tmp_dir = parent.join("tmp");
+
+        fs::create_dir(&dst_dir).expect("create_dir should succeed");
+        fs::create_dir(&tmp_dir).expect("create_dir should succeed");
+
+        let options = LinkerOptions {
+            mode: LinkMode::Copy,
+            force: false,
+            allow_symlink: false,
+        };
+
+        let result = replace_dst_with_tmp(&dst_dir, &tmp_dir, &options);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("force"));
+    }
+
+    #[test]
+    fn test_replace_dst_with_force_succeeds_when_exists() {
+        let tmp = tempfile::tempdir().expect("tempdir should succeed");
+        let parent = tmp.path();
+        let dst_dir = parent.join("dst");
+        let tmp_dir = parent.join("tmp");
+
+        fs::create_dir(&dst_dir).expect("create_dir should succeed");
+        fs::create_dir(&tmp_dir).expect("create_dir should succeed");
+
+        let options = LinkerOptions {
+            mode: LinkMode::Copy,
+            force: true,
+            allow_symlink: false,
+        };
+
+        let result = replace_dst_with_tmp(&dst_dir, &tmp_dir, &options);
+        assert!(result.is_ok());
+        // After rename, tmp_dir becomes dst_dir
+        assert!(!tmp_dir.exists());
+        assert!(dst_dir.exists());
+    }
 }

@@ -292,29 +292,35 @@ impl SiftConfig {
         // Validate each MCP server config
         for (name, entry) in &self.mcp {
             let config: crate::mcp::McpConfig = entry.clone().into();
-            config.validate()
+            config
+                .validate()
                 .with_context(|| format!("Invalid MCP server configuration: '{}'", name))?;
         }
 
         // Validate each skill config
         for (name, entry) in &self.skill {
             let config: crate::skills::SkillConfig = entry.clone().into();
-            config.validate()
+            config
+                .validate()
                 .with_context(|| format!("Invalid skill configuration: '{}'", name))?;
         }
 
         // Validate each client config
         for (name, entry) in &self.clients {
             let config: crate::client::ClientConfig = entry.clone().into();
-            config.validate()
+            config
+                .validate()
                 .with_context(|| format!("Invalid client configuration: '{}'", name))?;
         }
 
         // Validate each registry config
         for (name, entry) in &self.registry {
-            let config: crate::registry::RegistryConfig = entry.clone().try_into()
+            let config: crate::registry::RegistryConfig = entry
+                .clone()
+                .try_into()
                 .with_context(|| format!("Invalid registry configuration: '{}'", name))?;
-            config.validate()
+            config
+                .validate()
                 .with_context(|| format!("Invalid registry configuration: '{}'", name))?;
         }
 
@@ -417,7 +423,9 @@ mod tests {
             path: std::path::PathBuf::from(&project_path),
             ..Default::default()
         };
-        config.projects.insert(project_path.clone(), override_config);
+        config
+            .projects
+            .insert(project_path.clone(), override_config);
 
         let found = config.get_project_override(&std::path::PathBuf::from("/Users/test/project"));
         assert!(found.is_some());
@@ -438,7 +446,10 @@ mod tests {
         };
 
         let override_config = entry.to_override();
-        assert_eq!(override_config.runtime, Some(crate::mcp::RuntimeType::Docker));
+        assert_eq!(
+            override_config.runtime,
+            Some(crate::mcp::RuntimeType::Docker)
+        );
         assert_eq!(override_config.env.len(), 1);
     }
 

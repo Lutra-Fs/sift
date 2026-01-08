@@ -3,6 +3,8 @@
 //! Implements snapshot-based version locking for reproducibility
 
 pub mod lock;
+pub mod store;
 
 // Re-export the lockfile types
-pub use lock::{LockedPackage, Lockfile, VersionConstraint, VersionResolver};
+pub use lock::{LockedMcpServer, LockedSkill, Lockfile, VersionConstraint, VersionResolver};
+pub use store::LockfileStore;

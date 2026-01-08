@@ -59,7 +59,8 @@ impl RegistryConfig {
                     anyhow::bail!("Claude Marketplace registry requires 'source' field");
                 }
                 if let Some(ref source) = self.source
-                    && !source.starts_with("github:") && !source.starts_with("git:")
+                    && !source.starts_with("github:")
+                    && !source.starts_with("git:")
                 {
                     anyhow::bail!(
                         "Claude Marketplace source must be 'github:org/repo' or 'git:url'"
@@ -73,19 +74,23 @@ impl RegistryConfig {
     /// Get the registry name for display purposes
     pub fn display_name(&self) -> String {
         match self.r#type {
-            RegistryType::Sift => {
-                self.url
-                    .as_ref()
-                    .map(|u| u.to_string())
-                    .unwrap_or_else(|| "Sift Registry".to_string())
-            }
-            RegistryType::ClaudeMarketplace => {
-                self.source
-                    .as_ref()
-                    .map(|s| format!("Claude Marketplace ({})",
-s.strip_prefix("github:").or(s.strip_prefix("git:")).unwrap_or(s)))
-                    .unwrap_or_else(|| "Claude Marketplace".to_string())
-            }
+            RegistryType::Sift => self
+                .url
+                .as_ref()
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| "Sift Registry".to_string()),
+            RegistryType::ClaudeMarketplace => self
+                .source
+                .as_ref()
+                .map(|s| {
+                    format!(
+                        "Claude Marketplace ({})",
+                        s.strip_prefix("github:")
+                            .or(s.strip_prefix("git:"))
+                            .unwrap_or(s)
+                    )
+                })
+                .unwrap_or_else(|| "Claude Marketplace".to_string()),
         }
     }
 }

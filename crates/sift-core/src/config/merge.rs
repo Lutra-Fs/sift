@@ -207,7 +207,10 @@ fn apply_project_override(
 }
 
 /// Apply MCP override to an existing entry
-fn apply_mcp_override(base: &mut McpConfigEntry, override_config: &crate::config::schema::McpOverrideEntry) {
+fn apply_mcp_override(
+    base: &mut McpConfigEntry,
+    override_config: &crate::config::schema::McpOverrideEntry,
+) {
     if let Some(runtime) = &override_config.runtime {
         base.runtime = runtime.clone();
     }
@@ -258,9 +261,10 @@ mod tests {
     #[test]
     fn test_merge_configs_no_global() {
         let mut project = SiftConfig::new();
-        project
-            .mcp
-            .insert("test-mcp".to_string(), create_mcp_entry("registry:test", "node"));
+        project.mcp.insert(
+            "test-mcp".to_string(),
+            create_mcp_entry("registry:test", "node"),
+        );
 
         let merged = merge_configs(None, Some(project), Path::new("/test/project")).unwrap();
 
@@ -271,12 +275,12 @@ mod tests {
     #[test]
     fn test_merge_configs_no_project() {
         let mut global = SiftConfig::new();
-        global
-            .mcp
-            .insert("test-mcp".to_string(), create_mcp_entry("registry:test", "node"));
+        global.mcp.insert(
+            "test-mcp".to_string(),
+            create_mcp_entry("registry:test", "node"),
+        );
 
-        let merged =
-            merge_configs(Some(global), None, Path::new("/test/project")).unwrap();
+        let merged = merge_configs(Some(global), None, Path::new("/test/project")).unwrap();
 
         assert_eq!(merged.mcp.len(), 1);
         assert!(merged.mcp.contains_key("test-mcp"));
@@ -573,10 +577,9 @@ mod tests {
     #[test]
     fn test_projects_cleared_after_merge() {
         let mut global = SiftConfig::new();
-        global.projects.insert(
-            "/test/project".to_string(),
-            ProjectOverride::default(),
-        );
+        global
+            .projects
+            .insert("/test/project".to_string(), ProjectOverride::default());
 
         let merged = merge_configs(Some(global), None, Path::new("/test/project")).unwrap();
 

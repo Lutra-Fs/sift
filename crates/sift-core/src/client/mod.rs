@@ -66,11 +66,10 @@ impl ClientConfig {
     /// Validate the configuration
     pub fn validate(&self) -> anyhow::Result<()> {
         if let Some(ref source) = self.source
-            && !source.starts_with("registry:") && !source.starts_with("local:")
+            && !source.starts_with("registry:")
+            && !source.starts_with("local:")
         {
-            anyhow::bail!(
-                "Invalid client source format: must be 'registry:name' or 'local:/path'"
-            );
+            anyhow::bail!("Invalid client source format: must be 'registry:name' or 'local:/path'");
         }
         Ok(())
     }
@@ -232,9 +231,8 @@ impl ClientCapabilities {
     pub fn supports_scope(&self, scope: crate::config::ConfigScope) -> bool {
         match scope {
             crate::config::ConfigScope::Global => self.supports_global,
-            crate::config::ConfigScope::PerProjectLocal | crate::config::ConfigScope::PerProjectShared => {
-                self.supports_project
-            }
+            crate::config::ConfigScope::PerProjectLocal
+            | crate::config::ConfigScope::PerProjectShared => self.supports_project,
         }
     }
 }
@@ -445,7 +443,8 @@ mod tests {
         assert_eq!(json, "\"claude-code\"");
 
         let desktop = ClientType::ClaudeDesktop;
-        let json = serde_json::to_string(&desktop).expect("ClientType serialization should succeed");
+        let json =
+            serde_json::to_string(&desktop).expect("ClientType serialization should succeed");
         assert_eq!(json, "\"claude-desktop\"");
     }
 }

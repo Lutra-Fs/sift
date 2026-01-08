@@ -2,8 +2,10 @@
 //!
 //! Implements snapshot-based version locking for reproducibility
 
+use crate::fs::LinkMode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Lockfile for resolved package versions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,13 +16,13 @@ pub struct Lockfile {
     /// Timestamp when lockfile was generated
     pub generated_at: chrono::DateTime<chrono::Utc>,
 
-    /// Locked MCP servers
+    /// Locked MCP servers (version only)
     #[serde(default)]
-    pub mcp_servers: HashMap<String, LockedPackage>,
+    pub mcp_servers: HashMap<String, LockedMcpServer>,
 
-    /// Locked skills
+    /// Locked skills (version + install state)
     #[serde(default)]
-    pub skills: HashMap<String, LockedPackage>,
+    pub skills: HashMap<String, LockedSkill>,
 }
 
 impl Lockfile {
@@ -35,32 +37,32 @@ impl Lockfile {
     }
 
     /// Add or update a locked MCP server
-    pub fn add_mcp_server(&mut self, name: String, package: LockedPackage) {
-        self.mcp_servers.insert(name, package);
-    }
-
-    /// Add or update a locked skill
-    pub fn add_skill(&mut self, name: String, package: LockedPackage) {
-        self.skills.insert(name, package);
+    pub fn add_mcp_server(&mut self, name: String, server: LockedMcpServer) {
+        self.mcp_servers.insert(name, server);
     }
 
     /// Get a locked MCP server
-    pub fn get_mcp_server(&self, name: &str) -> Option<&LockedPackage> {
+    pub fn get_mcp_server(&self, name: &str) -> Option<&LockedMcpServer> {
         self.mcp_servers.get(name)
     }
 
-    /// Get a locked skill
-    pub fn get_skill(&self, name: &str) -> Option<&LockedPackage> {
-        self.skills.get(name)
-    }
-
     /// Remove a locked MCP server
-    pub fn remove_mcp_server(&mut self, name: &str) -> Option<LockedPackage> {
+    pub fn remove_mcp_server(&mut self, name: &str) -> Option<LockedMcpServer> {
         self.mcp_servers.remove(name)
     }
 
+    /// Add or update a locked skill
+    pub fn add_skill(&mut self, name: String, skill: LockedSkill) {
+        self.skills.insert(name, skill);
+    }
+
+    /// Get a locked skill
+    pub fn get_skill(&self, name: &str) -> Option<&LockedSkill> {
+        self.skills.get(name)
+    }
+
     /// Remove a locked skill
-    pub fn remove_skill(&mut self, name: &str) -> Option<LockedPackage> {
+    pub fn remove_skill(&mut self, name: &str) -> Option<LockedSkill> {
         self.skills.remove(name)
     }
 
@@ -79,10 +81,12 @@ impl Default for Lockfile {
     }
 }
 
-/// A locked package with resolved version
+/// A locked MCP server with resolved version
+///
+/// MCP servers only need version tracking, no install state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LockedPackage {
-    /// Package name
+pub struct LockedMcpServer {
+    /// Server name
     pub name: String,
 
     /// Resolved version (exact Git SHA, Docker tag, etc.)
@@ -98,8 +102,8 @@ pub struct LockedPackage {
     pub checksum: Option<String>,
 }
 
-impl LockedPackage {
-    /// Create a new locked package
+impl LockedMcpServer {
+    /// Create a new locked MCP server
     pub fn new(
         name: String,
         resolved_version: String,
@@ -119,6 +123,98 @@ impl LockedPackage {
     pub fn with_checksum(mut self, checksum: String) -> Self {
         self.checksum = Some(checksum);
         self
+    }
+}
+
+/// A locked skill with version and install state
+///
+/// Note: Paths are stored as JSON strings; non-UTF-8 paths will cause
+/// LockfileStore::save() to fail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockedSkill {
+    /// Skill name
+    pub name: String,
+
+    /// Resolved version (exact Git SHA, Docker tag, etc.)
+    pub resolved_version: String,
+
+    /// Original constraint from sift.toml
+    pub constraint: String,
+
+    /// Registry source
+    pub registry: String,
+
+    /// Checksum for verification (optional)
+    pub checksum: Option<String>,
+
+    /// Destination path where skill is materialized (optional if not installed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dst_path: Option<PathBuf>,
+
+    /// Cache source path (optional if not installed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_src_path: Option<PathBuf>,
+
+    /// Link mode used (optional if not installed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<LinkMode>,
+
+    /// Tree hash for content verification (optional if not installed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree_hash: Option<String>,
+
+    /// Timestamp when installed (optional if not installed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl LockedSkill {
+    /// Create a new locked skill (not installed yet)
+    pub fn new(
+        name: String,
+        resolved_version: String,
+        constraint: String,
+        registry: String,
+    ) -> Self {
+        Self {
+            name,
+            resolved_version,
+            constraint,
+            registry,
+            checksum: None,
+            dst_path: None,
+            cache_src_path: None,
+            mode: None,
+            tree_hash: None,
+            installed_at: None,
+        }
+    }
+
+    /// Set the checksum
+    pub fn with_checksum(mut self, checksum: String) -> Self {
+        self.checksum = Some(checksum);
+        self
+    }
+
+    /// Mark as installed
+    pub fn with_install_state(
+        mut self,
+        dst_path: PathBuf,
+        cache_src_path: PathBuf,
+        mode: LinkMode,
+        tree_hash: String,
+    ) -> Self {
+        self.dst_path = Some(dst_path);
+        self.cache_src_path = Some(cache_src_path);
+        self.mode = Some(mode);
+        self.tree_hash = Some(tree_hash);
+        self.installed_at = Some(chrono::Utc::now());
+        self
+    }
+
+    /// Check if this skill is installed
+    pub fn is_installed(&self) -> bool {
+        self.dst_path.is_some()
     }
 }
 
@@ -169,10 +265,7 @@ impl VersionResolver {
     /// - Query the registry for available versions
     /// - Resolve Git branches to specific commits
     /// - Check Docker tags
-    pub fn resolve(
-        _constraint: &VersionConstraint,
-        _registry: &str,
-    ) -> anyhow::Result<String> {
+    pub fn resolve(_constraint: &VersionConstraint, _registry: &str) -> anyhow::Result<String> {
         // TODO: Implement actual resolution
         // For now, return a placeholder
         Ok("resolved-placeholder".to_string())
@@ -368,23 +461,23 @@ mod tests {
     #[test]
     fn test_lockfile_add_and_get() {
         let mut lockfile = Lockfile::new();
-        let package = LockedPackage::new(
-            "test-package".to_string(),
+        let server = LockedMcpServer::new(
+            "test-server".to_string(),
             "1.2.3".to_string(),
             "^1.0".to_string(),
             "registry:official".to_string(),
         );
 
-        lockfile.add_mcp_server("test-mcp".to_string(), package.clone());
+        lockfile.add_mcp_server("test-mcp".to_string(), server.clone());
 
         let retrieved = lockfile.get_mcp_server("test-mcp").unwrap();
-        assert_eq!(retrieved.name, "test-package");
+        assert_eq!(retrieved.name, "test-server");
         assert_eq!(retrieved.resolved_version, "1.2.3");
     }
 
     #[test]
-    fn test_locked_package_with_checksum() {
-        let package = LockedPackage::new(
+    fn test_locked_mcp_server_with_checksum() {
+        let server = LockedMcpServer::new(
             "test".to_string(),
             "1.0.0".to_string(),
             "latest".to_string(),
@@ -392,20 +485,57 @@ mod tests {
         )
         .with_checksum("abc123".to_string());
 
-        assert_eq!(package.checksum, Some("abc123".to_string()));
+        assert_eq!(server.checksum, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn test_locked_skill_new() {
+        let skill = LockedSkill::new(
+            "test-skill".to_string(),
+            "1.0.0".to_string(),
+            "latest".to_string(),
+            "registry:official".to_string(),
+        );
+
+        assert_eq!(skill.name, "test-skill");
+        assert_eq!(skill.resolved_version, "1.0.0");
+        assert!(!skill.is_installed());
+        assert!(skill.dst_path.is_none());
+        assert!(skill.tree_hash.is_none());
+    }
+
+    #[test]
+    fn test_locked_skill_with_install_state() {
+        let skill = LockedSkill::new(
+            "test-skill".to_string(),
+            "1.0.0".to_string(),
+            "latest".to_string(),
+            "registry:official".to_string(),
+        )
+        .with_install_state(
+            PathBuf::from("/dst/skill"),
+            PathBuf::from("/cache/skill"),
+            LinkMode::Hardlink,
+            "abc123".to_string(),
+        );
+
+        assert!(skill.is_installed());
+        assert_eq!(skill.dst_path, Some(PathBuf::from("/dst/skill")));
+        assert_eq!(skill.tree_hash, Some("abc123".to_string()));
+        assert_eq!(skill.mode, Some(LinkMode::Hardlink));
     }
 
     #[test]
     fn test_lockfile_remove() {
         let mut lockfile = Lockfile::new();
-        let package = LockedPackage::new(
+        let skill = LockedSkill::new(
             "test".to_string(),
             "1.0.0".to_string(),
             "latest".to_string(),
             "registry:official".to_string(),
         );
 
-        lockfile.add_skill("test-skill".to_string(), package);
+        lockfile.add_skill("test-skill".to_string(), skill);
         let removed = lockfile.remove_skill("test-skill");
 
         assert!(removed.is_some());

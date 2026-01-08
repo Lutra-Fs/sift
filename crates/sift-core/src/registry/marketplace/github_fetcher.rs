@@ -32,15 +32,15 @@ impl GitHubFetcher {
         ref_: Option<&str>,
     ) -> anyhow::Result<String> {
         // Parse "github:anthropics/life-sciences" -> ("anthropics", "life-sciences")
-        let repo_path = marketplace_source.strip_prefix("github:")
+        let repo_path = marketplace_source
+            .strip_prefix("github:")
             .ok_or_else(|| anyhow::anyhow!("Invalid GitHub source: {}", marketplace_source))?;
 
         let (owner, repo) = Self::parse_github_repo(repo_path)?;
 
         // Normalize plugin source path
         // "./10x-genomics" -> "10x-genomics"
-        let plugin_path = plugin_source.strip_prefix("./")
-            .unwrap_or(plugin_source);
+        let plugin_path = plugin_source.strip_prefix("./").unwrap_or(plugin_source);
 
         // Use "main" as default branch
         let git_ref = ref_.unwrap_or("main");
@@ -130,7 +130,8 @@ mod tests {
             "github:anthropics/life-sciences",
             "./10x-genomics",
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(
             url,
@@ -144,7 +145,8 @@ mod tests {
             "github:anthropics/life-sciences",
             "./10x-genomics",
             Some("v1.0.0"),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(
             url,
@@ -158,7 +160,8 @@ mod tests {
             "github:anthropics/life-sciences",
             "./category/subcategory/plugin-name",
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(
             url,
@@ -168,11 +171,7 @@ mod tests {
 
     #[test]
     fn test_construct_plugin_json_url_invalid_source() {
-        let result = GitHubFetcher::construct_plugin_json_url(
-            "invalid:format",
-            "./test",
-            None,
-        );
+        let result = GitHubFetcher::construct_plugin_json_url("invalid:format", "./test", None);
         assert!(result.is_err());
     }
 

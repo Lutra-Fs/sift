@@ -15,8 +15,8 @@ pub mod version;
 pub mod prelude {
     // Configuration
     pub use crate::config::{
-        ClientConfigEntry, ConfigManager, ConfigScope, McpConfigEntry, ProjectOverride,
-        SiftConfig, SkillConfigEntry,
+        ClientConfigEntry, ConfigManager, ConfigScope, McpConfigEntry, ProjectOverride, SiftConfig,
+        SkillConfigEntry,
     };
 
     // MCP
@@ -39,5 +39,7 @@ pub mod prelude {
     pub use crate::registry::{RegistryConfig, RegistryType};
 
     // Version
-    pub use crate::version::{Lockfile, LockedPackage, VersionConstraint, VersionResolver};
+    pub use crate::version::{
+        LockedMcpServer, LockedSkill, Lockfile, VersionConstraint, VersionResolver,
+    };
 }

@@ -68,7 +68,7 @@ pub enum RuntimeType {
     Node,
     Python,
     Bun,
-    Shell,  // For compiled binaries, shell scripts, etc.
+    Shell, // For compiled binaries, shell scripts, etc.
 }
 
 impl RuntimeType {
@@ -76,8 +76,7 @@ impl RuntimeType {
     pub fn is_compatible_with(&self, other: &RuntimeType) -> bool {
         match (self, other) {
             // Node and Bun are compatible (both JS runtimes)
-            (RuntimeType::Node, RuntimeType::Bun) |
-            (RuntimeType::Bun, RuntimeType::Node) => true,
+            (RuntimeType::Node, RuntimeType::Bun) | (RuntimeType::Bun, RuntimeType::Node) => true,
             // Shell is only compatible with itself (direct execution)
             (RuntimeType::Shell, RuntimeType::Shell) => true,
             // Same runtime is always compatible
@@ -343,7 +342,10 @@ mod tests {
         assert!(base.targets.is_some());
         assert_eq!(base.env.len(), 2);
         assert_eq!(base.env.get("BASE_VAR"), Some(&"base_value".to_string()));
-        assert_eq!(base.env.get("OVERLAY_VAR"), Some(&"overlay_value".to_string()));
+        assert_eq!(
+            base.env.get("OVERLAY_VAR"),
+            Some(&"overlay_value".to_string())
+        );
     }
 
     #[test]
@@ -378,7 +380,10 @@ mod tests {
         assert_eq!(config.runtime, RuntimeType::Docker);
         assert_eq!(config.env.len(), 2);
         assert_eq!(config.env.get("BASE_VAR"), Some(&"base_value".to_string()));
-        assert_eq!(config.env.get("OVERRIDE_VAR"), Some(&"override_value".to_string()));
+        assert_eq!(
+            config.env.get("OVERRIDE_VAR"),
+            Some(&"override_value".to_string())
+        );
     }
 
     #[test]
