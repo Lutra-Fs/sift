@@ -176,8 +176,8 @@ fn merge_client_entry(
     if overlay.source.is_some() {
         base.source = overlay.source;
     }
-    if overlay.fs_strategy.is_some() {
-        base.fs_strategy = overlay.fs_strategy;
+    if overlay.link_mode.is_some() {
+        base.link_mode = overlay.link_mode;
     }
     if overlay.capabilities.is_some() {
         base.capabilities = overlay.capabilities;

@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+use crate::fs::LinkMode;
+
 /// Built-in client types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -35,9 +37,9 @@ pub struct ClientConfig {
     #[serde(default)]
     pub source: Option<String>,
 
-    /// Filesystem strategy for skill delivery
-    #[serde(default = "default_fs_strategy")]
-    pub fs_strategy: FsStrategy,
+    /// How Sift should materialize skills into the client's expected location
+    #[serde(default)]
+    pub link_mode: LinkMode,
 
     /// Capabilities (auto-detected for built-in clients)
     #[serde(default)]
@@ -48,10 +50,6 @@ fn default_enabled() -> bool {
     true
 }
 
-fn default_fs_strategy() -> FsStrategy {
-    FsStrategy::Auto
-}
-
 impl ClientConfig {
     /// Merge another ClientConfig into this one
     pub fn merge(&mut self, other: ClientConfig) {
@@ -59,7 +57,7 @@ impl ClientConfig {
         if other.source.is_some() {
             self.source = other.source;
         }
-        self.fs_strategy = other.fs_strategy;
+        self.link_mode = other.link_mode;
         if other.capabilities.is_some() {
             self.capabilities = other.capabilities;
         }
@@ -86,10 +84,11 @@ impl ClientConfig {
             ClientType::GeminiCli => ClientConfig {
                 enabled: true,
                 source: None,
-                fs_strategy: FsStrategy::Auto,
+                link_mode: LinkMode::Auto,
                 capabilities: Some(ClientCapabilities {
                     supports_global: true,
                     supports_project: false,
+                    supports_symlinked_skills: false,
                     skill_delivery: SkillDeliveryMode::ConfigReference,
                     mcp_config_format: McpConfigFormat::Generic,
                     supported_transports: {
@@ -102,10 +101,11 @@ impl ClientConfig {
             ClientType::Codex => ClientConfig {
                 enabled: true,
                 source: None,
-                fs_strategy: FsStrategy::Auto,
+                link_mode: LinkMode::Auto,
                 capabilities: Some(ClientCapabilities {
                     supports_global: true,
                     supports_project: false,
+                    supports_symlinked_skills: false,
                     skill_delivery: SkillDeliveryMode::ConfigReference,
                     mcp_config_format: McpConfigFormat::Generic,
                     supported_transports: {
@@ -123,10 +123,11 @@ impl ClientConfig {
         ClientConfig {
             enabled: true,
             source: None,
-            fs_strategy: FsStrategy::Auto,
+            link_mode: LinkMode::Auto,
             capabilities: Some(ClientCapabilities {
                 supports_global: true,
                 supports_project: false,
+                supports_symlinked_skills: true,
                 skill_delivery: SkillDeliveryMode::Filesystem {
                     global_path: "~/.claude/skills".to_string(),
                     project_path: None,
@@ -146,10 +147,11 @@ impl ClientConfig {
         ClientConfig {
             enabled: true,
             source: None,
-            fs_strategy: FsStrategy::Auto,
+            link_mode: LinkMode::Auto,
             capabilities: Some(ClientCapabilities {
                 supports_global: true,
                 supports_project: true,
+                supports_symlinked_skills: true,
                 skill_delivery: SkillDeliveryMode::Filesystem {
                     global_path: "~/.claude/skills".to_string(),
                     project_path: Some("./.claude/skills".to_string()),
@@ -170,10 +172,11 @@ impl ClientConfig {
         ClientConfig {
             enabled: true,
             source: None,
-            fs_strategy: FsStrategy::Auto,
+            link_mode: LinkMode::Auto,
             capabilities: Some(ClientCapabilities {
                 supports_global: true,
                 supports_project: true,
+                supports_symlinked_skills: false,
                 skill_delivery: SkillDeliveryMode::ConfigReference,
                 mcp_config_format: McpConfigFormat::Generic,
                 supported_transports: {
@@ -186,18 +189,6 @@ impl ClientConfig {
     }
 }
 
-/// Filesystem strategy for skill delivery
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FsStrategy {
-    /// Auto-detect: symlink if possible, fallback to copy
-    Auto,
-    /// Force symlink (fail if not supported)
-    Symlink,
-    /// Always copy (for sandboxed/remote environments)
-    Copy,
-}
-
 /// Client capabilities interface
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientCapabilities {
@@ -207,6 +198,10 @@ pub struct ClientCapabilities {
 
     #[serde(default)]
     pub supports_project: bool,
+
+    /// Whether the client will recognize skills delivered as symlinked directories
+    #[serde(default)]
+    pub supports_symlinked_skills: bool,
 
     /// Skill delivery mode
     pub skill_delivery: SkillDeliveryMode,
@@ -376,14 +371,14 @@ mod tests {
         let mut base = ClientConfig {
             enabled: true,
             source: Some("registry:base".to_string()),
-            fs_strategy: FsStrategy::Auto,
+            link_mode: LinkMode::Auto,
             capabilities: None,
         };
 
         let overlay = ClientConfig {
             enabled: false,
             source: Some("registry:overlay".to_string()),
-            fs_strategy: FsStrategy::Symlink,
+            link_mode: LinkMode::Symlink,
             capabilities: None,
         };
 
@@ -391,7 +386,7 @@ mod tests {
 
         assert!(!base.enabled);
         assert_eq!(base.source, Some("registry:overlay".to_string()));
-        assert_eq!(base.fs_strategy, FsStrategy::Symlink);
+        assert_eq!(base.link_mode, LinkMode::Symlink);
     }
 
     #[test]
@@ -399,7 +394,7 @@ mod tests {
         let config = ClientConfig {
             enabled: true,
             source: Some("registry:custom-provider".to_string()),
-            fs_strategy: FsStrategy::Auto,
+            link_mode: LinkMode::Auto,
             capabilities: None,
         };
         assert!(config.validate().is_ok());
@@ -410,7 +405,7 @@ mod tests {
         let config = ClientConfig {
             enabled: true,
             source: Some("invalid:source".to_string()),
-            fs_strategy: FsStrategy::Auto,
+            link_mode: LinkMode::Auto,
             capabilities: None,
         };
         assert!(config.validate().is_err());
@@ -421,6 +416,7 @@ mod tests {
         let caps = ClientCapabilities {
             supports_global: false,
             supports_project: false,
+            supports_symlinked_skills: false,
             skill_delivery: SkillDeliveryMode::None,
             mcp_config_format: McpConfigFormat::Generic,
             supported_transports: HashSet::new(),
@@ -433,6 +429,7 @@ mod tests {
         let caps = ClientCapabilities {
             supports_global: true,
             supports_project: false,
+            supports_symlinked_skills: false,
             skill_delivery: SkillDeliveryMode::None,
             mcp_config_format: McpConfigFormat::Generic,
             supported_transports: HashSet::new(),
@@ -444,11 +441,11 @@ mod tests {
     fn test_client_type_serialization() {
         // Test that ClientType serializes as kebab-case
         let code = ClientType::ClaudeCode;
-        let json = serde_json::to_string(&code).unwrap();
+        let json = serde_json::to_string(&code).expect("ClientType serialization should succeed");
         assert_eq!(json, "\"claude-code\"");
 
         let desktop = ClientType::ClaudeDesktop;
-        let json = serde_json::to_string(&desktop).unwrap();
+        let json = serde_json::to_string(&desktop).expect("ClientType serialization should succeed");
         assert_eq!(json, "\"claude-desktop\"");
     }
 }

@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod config;
+pub mod fs;
 pub mod mcp;
 pub mod registry;
 pub mod skills;
@@ -26,9 +27,12 @@ pub mod prelude {
 
     // Client
     pub use crate::client::{
-        ClientAdapter, ClientCapabilities, ClientConfig, ClientType, FsStrategy,
-        McpConfigFormat, SkillDeliveryMode,
+        ClientAdapter, ClientCapabilities, ClientConfig, ClientType, McpConfigFormat,
+        SkillDeliveryMode,
     };
+
+    // Filesystem
+    pub use crate::fs::LinkMode;
 
     // Registry
     pub use crate::registry::marketplace::{MarketplaceAdapter, MarketplaceManifest};

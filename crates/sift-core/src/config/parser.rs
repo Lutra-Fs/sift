@@ -260,7 +260,7 @@ version = "1.0.0"
 
 [clients.claude-desktop]
 enabled = true
-fs_strategy = "auto"
+link_mode = "auto"
 
 [registry.official]
 type = "sift"
@@ -271,7 +271,7 @@ type = "claude-marketplace"
 source = "github:company/plugins"
 "#;
 
-        let config = parse_sift_toml_str(toml).unwrap();
+        let config = parse_sift_toml_str(toml).expect("parse_sift_toml_str should succeed");
         assert_eq!(config.mcp.len(), 1);
         assert_eq!(config.skill.len(), 1);
         assert_eq!(config.clients.len(), 1);

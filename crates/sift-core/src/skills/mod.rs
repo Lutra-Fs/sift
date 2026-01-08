@@ -1,5 +1,6 @@
 //! Skills management
 
+pub mod linker;
 pub mod schema;
 
 use serde::{Deserialize, Serialize};

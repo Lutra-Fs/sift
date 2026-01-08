@@ -155,9 +155,9 @@ pub struct ClientConfigEntry {
     #[serde(default)]
     pub source: Option<String>,
 
-    /// Filesystem strategy for skill delivery
+    /// How Sift should materialize skills into the client's expected location
     #[serde(default)]
-    pub fs_strategy: Option<String>,
+    pub link_mode: Option<crate::fs::LinkMode>,
 
     /// Capabilities (optional, auto-detected for built-in clients)
     #[serde(default)]
@@ -170,16 +170,10 @@ fn default_client_enabled() -> bool {
 
 impl From<ClientConfigEntry> for crate::client::ClientConfig {
     fn from(entry: ClientConfigEntry) -> Self {
-        let fs_strategy = match entry.fs_strategy.as_deref() {
-            Some("symlink") => crate::client::FsStrategy::Symlink,
-            Some("copy") => crate::client::FsStrategy::Copy,
-            _ => crate::client::FsStrategy::Auto,
-        };
-
         crate::client::ClientConfig {
             enabled: entry.enabled,
             source: entry.source,
-            fs_strategy,
+            link_mode: entry.link_mode.unwrap_or_default(),
             capabilities: None, // Would need JSON deserialization for full support
         }
     }
