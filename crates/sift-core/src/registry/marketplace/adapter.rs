@@ -62,16 +62,26 @@ pub struct MarketplacePlugin {
     /// Source information
     pub source: MarketplaceSource,
 
-    /// Skills provided by this plugin
+    /// NEW: Skills array (replaces commands field)
     #[serde(default)]
-    pub commands: Option<CommandsOrPaths>,
+    pub skills: Option<SkillsOrPaths>,
+
+    /// DEPRECATED: Commands field (use `skills` instead)
+    /// Kept for backward compatibility via serde alias
+    #[serde(default, alias = "commands")]
+    pub commands_legacy: Option<CommandsOrPaths>,
+
+    /// Strict mode flag (from anthropics/skills format)
+    #[serde(default)]
+    pub strict: Option<bool>,
 
     /// Hooks configuration
     #[serde(default)]
     pub hooks: Option<serde_json::Value>,
 
     /// MCP servers configuration
-    #[serde(default)]
+    /// Supports both snake_case (mcp_servers) and camelCase (mcpServers)
+    #[serde(default, alias = "mcpServers")]
     pub mcp_servers: Option<serde_json::Value>,
 
     /// Author information
@@ -142,6 +152,7 @@ pub enum SourceType {
 }
 
 /// Commands can be a string, array, or object
+/// DEPRECATED: Use `skills` field instead (kept for backward compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CommandsOrPaths {
@@ -149,15 +160,89 @@ pub enum CommandsOrPaths {
     Multiple(Vec<String>),
 }
 
+/// Skills can be a string, array, or object
+/// This is the new standard for defining agent skills in marketplace plugins
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SkillsOrPaths {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+/// Raw marketplace manifest for format detection
+/// Handles both flat (claude-code) and metadata wrapper (skills/life-sciences) formats
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum RawMarketplaceManifest {
+    /// Format with metadata wrapper (anthropics/skills, anthropics/life-sciences)
+    WithMetadata {
+        name: String,
+        owner: MarketplaceOwner,
+        metadata: Option<Metadata>,
+        plugins: Vec<serde_json::Value>,
+    },
+    /// Flat format (claude-code)
+    Flat {
+        marketplace: MarketplaceInfo,
+        plugins: Vec<serde_json::Value>,
+    },
+}
+
+/// Metadata wrapper for marketplace-level metadata
+#[derive(Debug, Clone, Deserialize)]
+pub struct Metadata {
+    pub description: Option<String>,
+    pub version: Option<String>,
+    #[serde(default)]
+    pub plugin_root: Option<String>,
+}
+
 /// Adapter to convert marketplace plugins to Sift configurations
 pub struct MarketplaceAdapter;
 
 impl MarketplaceAdapter {
-    /// Parse marketplace.json from a string
+    /// Parse marketplace.json from a string (auto-detects format)
+    /// Supports both claude-code (flat) and anthropics/skills/life-sciences (metadata wrapper) formats
     pub fn parse(content: &str) -> anyhow::Result<MarketplaceManifest> {
-        let manifest: MarketplaceManifest = serde_json::from_str(content)
+        // Try to parse as raw manifest to detect format
+        let raw: RawMarketplaceManifest = serde_json::from_str(content)
             .map_err(|e| anyhow::anyhow!("Failed to parse marketplace.json: {}", e))?;
-        Ok(manifest)
+
+        // Normalize to unified MarketplaceManifest
+        match raw {
+            RawMarketplaceManifest::WithMetadata { name, owner, metadata, plugins } => {
+                // Parse plugins from JSON values
+                let parsed_plugins = plugins
+                    .into_iter()
+                    .map(|v| serde_json::from_value(v)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse plugin: {}", e)))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+
+                Ok(MarketplaceManifest {
+                    marketplace: MarketplaceInfo {
+                        name: Some(name),
+                        owner: Some(owner),
+                        description: metadata.as_ref().and_then(|m| m.description.clone()),
+                        version: metadata.as_ref().and_then(|m| m.version.clone()),
+                        plugin_root: metadata.as_ref().and_then(|m| m.plugin_root.clone()),
+                    },
+                    plugins: parsed_plugins,
+                })
+            }
+            RawMarketplaceManifest::Flat { marketplace, plugins } => {
+                // Parse plugins from JSON values
+                let parsed_plugins = plugins
+                    .into_iter()
+                    .map(|v| serde_json::from_value(v)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse plugin: {}", e)))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+
+                Ok(MarketplaceManifest {
+                    marketplace,
+                    plugins: parsed_plugins,
+                })
+            }
+        }
     }
 
     /// Get the source string from a marketplace plugin
@@ -233,6 +318,80 @@ impl MarketplaceAdapter {
         })
     }
 
+    /// Convert a marketplace plugin to multiple Sift skill configs
+    /// Returns one SkillConfig per path in the skills array (new format)
+    /// Falls back to commands_legacy for backward compatibility
+    pub fn plugin_to_skill_configs(
+        plugin: &MarketplacePlugin,
+    ) -> anyhow::Result<Vec<crate::skills::SkillConfig>> {
+        let mut configs = Vec::new();
+        let base_source = Self::get_source_string(plugin);
+
+        // Try skills field first (new format)
+        if let Some(skills) = &plugin.skills {
+            match skills {
+                SkillsOrPaths::Single(path) => {
+                    configs.push(Self::create_skill_config(&base_source, plugin, path)?);
+                }
+                SkillsOrPaths::Multiple(paths) => {
+                    for path in paths {
+                        configs.push(Self::create_skill_config(&base_source, plugin, path)?);
+                    }
+                }
+            }
+            return Ok(configs);
+        }
+
+        // Fallback to commands_legacy (old format with alias)
+        if let Some(commands) = &plugin.commands_legacy {
+            match commands {
+                CommandsOrPaths::Single(path) => {
+                    configs.push(Self::create_skill_config(&base_source, plugin, path)?);
+                }
+                CommandsOrPaths::Multiple(paths) => {
+                    for path in paths {
+                        configs.push(Self::create_skill_config(&base_source, plugin, path)?);
+                    }
+                }
+            }
+            return Ok(configs);
+        }
+
+        // No skills or commands - create single config from plugin source
+        configs.push(crate::skills::SkillConfig {
+            source: base_source,
+            version: plugin.version.clone(),
+            targets: None,
+            ignore_targets: None,
+        });
+        Ok(configs)
+    }
+
+    /// Create a single SkillConfig from a plugin and skill path
+    fn create_skill_config(
+        base_source: &str,
+        plugin: &MarketplacePlugin,
+        skill_path: &str,
+    ) -> anyhow::Result<crate::skills::SkillConfig> {
+        // Append skill path to base source
+        // "github:anthropics/skills" + "./skills/xlsx" -> "github:anthropics/skills/skills/xlsx"
+        let full_source = if skill_path.starts_with("./") {
+            format!("{}/{}", base_source.trim_end_matches('/'), skill_path.trim_start_matches("./"))
+        } else if skill_path.starts_with("/") {
+            // Absolute path - use as-is
+            skill_path.to_string()
+        } else {
+            format!("{}/{}", base_source, skill_path)
+        };
+
+        Ok(crate::skills::SkillConfig {
+            source: full_source,
+            version: plugin.version.clone(),
+            targets: None,
+            ignore_targets: None,
+        })
+    }
+
     /// Infer runtime type from a command string
     fn infer_runtime_from_command(command: &str) -> crate::mcp::RuntimeType {
         // Normalize command - detect package managers
@@ -268,8 +427,10 @@ impl MarketplaceAdapter {
     }
 
     /// Convert a marketplace plugin with MCP servers to Sift MCP configs
+    /// Supports both STDIO (command-based) and HTTP (URL-based) transports
     pub fn plugin_to_mcp_configs(
         plugin: &MarketplacePlugin,
+        _marketplace_source: Option<&str>,
     ) -> anyhow::Result<Vec<(String, crate::mcp::McpConfig)>> {
         let mut configs = Vec::new();
 
@@ -277,15 +438,56 @@ impl MarketplaceAdapter {
             && let Some(obj) = mcp_servers.as_object()
         {
             for (name, server_config) in obj {
-                // Extract command and args from the server config
-                let command = server_config
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("MCP server '{}' missing 'command' field", name)
-                    })?;
+                configs.push((
+                    name.clone(),
+                    Self::parse_mcp_server_config(name, server_config, plugin)?,
+                ));
+            }
+        }
 
-                let args = server_config
+        Ok(configs)
+    }
+
+    /// Parse a single MCP server configuration
+    fn parse_mcp_server_config(
+        name: &str,
+        server_config: &serde_json::Value,
+        plugin: &MarketplacePlugin,
+    ) -> anyhow::Result<crate::mcp::McpConfig> {
+        // Case 1: URL string → HTTP transport
+        if let Some(url_str) = server_config.as_str() {
+            return Ok(crate::mcp::McpConfig {
+                transport: crate::mcp::TransportType::Http,
+                source: plugin.name.clone(),
+                runtime: crate::mcp::RuntimeType::Node, // Not used for HTTP
+                args: vec![],
+                url: Some(url_str.to_string()),
+                headers: std::collections::HashMap::new(),
+                targets: None,
+                ignore_targets: None,
+                env: std::collections::HashMap::new(),
+            });
+        }
+
+        // Case 2: Object with url field → HTTP transport
+        if let Some(obj) = server_config.as_object() {
+            if let Some(url_str) = obj.get("url").and_then(|v| v.as_str()) {
+                return Ok(crate::mcp::McpConfig {
+                    transport: crate::mcp::TransportType::Http,
+                    source: plugin.name.clone(),
+                    runtime: crate::mcp::RuntimeType::Node,
+                    args: vec![],
+                    url: Some(url_str.to_string()),
+                    headers: std::collections::HashMap::new(),
+                    targets: None,
+                    ignore_targets: None,
+                    env: std::collections::HashMap::new(),
+                });
+            }
+
+            // Case 3: Object with command field → STDIO transport
+            if let Some(command) = obj.get("command").and_then(|v| v.as_str()) {
+                let args = obj
                     .get("args")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
@@ -296,28 +498,26 @@ impl MarketplaceAdapter {
                     .unwrap_or_default();
 
                 let source = Self::get_source_string(plugin);
-
-                // Determine runtime from command
                 let runtime = Self::infer_runtime_from_command(command);
 
-                configs.push((
-                    name.clone(),
-                    crate::mcp::McpConfig {
-                        transport: crate::mcp::TransportType::Stdio,
-                        source: format!("{}:{}", source, command),
-                        runtime,
-                        args,
-                        url: None,
-                        headers: std::collections::HashMap::new(),
-                        targets: None,
-                        ignore_targets: None,
-                        env: std::collections::HashMap::new(),
-                    },
-                ));
+                return Ok(crate::mcp::McpConfig {
+                    transport: crate::mcp::TransportType::Stdio,
+                    source: format!("{}:{}", source, command),
+                    runtime,
+                    args,
+                    url: None,
+                    headers: std::collections::HashMap::new(),
+                    targets: None,
+                    ignore_targets: None,
+                    env: std::collections::HashMap::new(),
+                });
             }
         }
 
-        Ok(configs)
+        anyhow::bail!(
+            "Invalid MCP server config for '{}': must be URL string or object with command/url field",
+            name
+        )
     }
 }
 
@@ -374,7 +574,7 @@ mod tests {
             description: "Test".to_string(),
             version: "1.0.0".to_string(),
             source: MarketplaceSource::String("./plugins/test".to_string()),
-            commands: None,
+            commands_legacy: None,
             hooks: None,
             mcp_servers: None,
             author: None,
@@ -384,6 +584,8 @@ mod tests {
             keywords: vec![],
             category: None,
             tags: vec![],
+            skills: None,
+            strict: None,
         };
 
         let source = MarketplaceAdapter::get_source_string(&plugin);
@@ -403,7 +605,7 @@ mod tests {
                 ref_: Some("v1.0.0".to_string()),
                 path: None,
             }),
-            commands: None,
+            commands_legacy: None,
             hooks: None,
             mcp_servers: None,
             author: None,
@@ -413,6 +615,8 @@ mod tests {
             keywords: vec![],
             category: None,
             tags: vec![],
+            skills: None,
+            strict: None,
         };
 
         let source = MarketplaceAdapter::get_source_string(&plugin);
@@ -484,7 +688,7 @@ mod tests {
             description: "Test plugin".to_string(),
             version: "2.1.0".to_string(),
             source: MarketplaceSource::String("registry:anthropic/pdf".to_string()),
-            commands: None,
+            commands_legacy: None,
             hooks: None,
             mcp_servers: None,
             author: None,
@@ -494,6 +698,8 @@ mod tests {
             keywords: vec![],
             category: None,
             tags: vec![],
+            skills: None,
+            strict: None,
         };
 
         let config = MarketplaceAdapter::plugin_to_skill_config(&plugin).unwrap();
@@ -634,6 +840,7 @@ mod tests {
     fn test_marketplace_npx_runtime_detection() {
         let json = r#"{
             "name": "test-marketplace",
+            "owner": {"name": "Test Owner"},
             "plugins": [{
                 "name": "test",
                 "description": "Test",
@@ -650,7 +857,7 @@ mod tests {
 
         let manifest = MarketplaceAdapter::parse(json).unwrap();
         let plugin = &manifest.plugins[0];
-        let configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin).unwrap();
+        let configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin, None).unwrap();
         assert_eq!(configs[0].1.runtime, crate::mcp::RuntimeType::Node);
     }
 
@@ -658,6 +865,7 @@ mod tests {
     fn test_marketplace_uvx_runtime_detection() {
         let json = r#"{
             "name": "test-marketplace",
+            "owner": {"name": "Test Owner"},
             "plugins": [{
                 "name": "test",
                 "description": "Test",
@@ -674,7 +882,7 @@ mod tests {
 
         let manifest = MarketplaceAdapter::parse(json).unwrap();
         let plugin = &manifest.plugins[0];
-        let configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin).unwrap();
+        let configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin, None).unwrap();
         assert_eq!(configs[0].1.runtime, crate::mcp::RuntimeType::Python);
     }
 
@@ -682,6 +890,7 @@ mod tests {
     fn test_marketplace_shell_runtime_fallback() {
         let json = r#"{
             "name": "test-marketplace",
+            "owner": {"name": "Test Owner"},
             "plugins": [{
                 "name": "test",
                 "description": "Test",
@@ -698,7 +907,203 @@ mod tests {
 
         let manifest = MarketplaceAdapter::parse(json).unwrap();
         let plugin = &manifest.plugins[0];
-        let configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin).unwrap();
+        let configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin, None).unwrap();
         assert_eq!(configs[0].1.runtime, crate::mcp::RuntimeType::Shell);
+    }
+
+    // === NEW TESTS FOR MULTI-FORMAT SUPPORT (RED PHASE) ===
+    // These tests are expected to FAIL until implementation is complete
+
+    #[test]
+    fn test_parse_anthropic_skills_format() {
+        // Test metadata wrapper + skills array format
+        let json = r#"{
+            "name": "anthropic-agent-skills",
+            "owner": {"name": "Keith Lazuka"},
+            "metadata": {
+                "description": "Agent skills",
+                "version": "1.0.0"
+            },
+            "plugins": [{
+                "name": "document-skills",
+                "description": "Document processing skills",
+                "source": "./",
+                "strict": false,
+                "skills": ["./skills/xlsx", "./skills/docx"]
+            }]
+        }"#;
+
+        let manifest = MarketplaceAdapter::parse(json).unwrap();
+        assert_eq!(manifest.plugins.len(), 1);
+
+        let plugin = &manifest.plugins[0];
+        assert_eq!(plugin.name, "document-skills");
+        assert_eq!(plugin.strict, Some(false));
+        assert!(plugin.skills.is_some());
+    }
+
+    #[test]
+    fn test_skills_to_multiple_skill_configs() {
+        // Test skills array expansion to multiple SkillConfig
+        let plugin = MarketplacePlugin {
+            name: "test".to_string(),
+            description: "Test".to_string(),
+            version: "1.0.0".to_string(),
+            source: MarketplaceSource::String("github:anthropics/skills".to_string()),
+            skills: Some(SkillsOrPaths::Multiple(vec![
+                "./skills/xlsx".to_string(),
+                "./skills/docx".to_string(),
+            ])),
+            commands_legacy: None,
+            hooks: None,
+            mcp_servers: None,
+            author: None,
+            homepage: None,
+            repository: None,
+            license: None,
+            keywords: vec![],
+            category: None,
+            tags: vec![],
+            strict: None,
+        };
+
+        let configs = MarketplaceAdapter::plugin_to_skill_configs(&plugin).unwrap();
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].source, "github:anthropics/skills/skills/xlsx");
+        assert_eq!(configs[1].source, "github:anthropics/skills/skills/docx");
+    }
+
+    #[test]
+    fn test_mcp_url_to_http_transport() {
+        // Test MCP server URL string → HTTP transport
+        let plugin = MarketplacePlugin {
+            name: "test".to_string(),
+            description: "Test".to_string(),
+            version: "1.0.0".to_string(),
+            source: MarketplaceSource::String("local:./test".to_string()),
+            mcp_servers: Some(serde_json::json!({
+                "http-server": "https://example.com/mcp"
+            })),
+            commands_legacy: None,
+            skills: None,
+            hooks: None,
+            author: None,
+            homepage: None,
+            repository: None,
+            license: None,
+            keywords: vec![],
+            category: None,
+            tags: vec![],
+            strict: None,
+        };
+
+        let configs = MarketplaceAdapter::plugin_to_mcp_configs(&plugin, None).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].1.transport, crate::mcp::TransportType::Http);
+        assert_eq!(configs[0].1.url, Some("https://example.com/mcp".to_string()));
+    }
+
+    #[test]
+    fn test_backward_compatibility_commands_alias() {
+        // Test that "commands" field maps to commands_legacy via alias
+        let json = r#"{
+            "name": "old-marketplace",
+            "owner": {"name": "Test"},
+            "plugins": [{
+                "name": "test",
+                "description": "Test",
+                "version": "1.0.0",
+                "source": "./test",
+                "commands": ["./cmd1", "./cmd2"]
+            }]
+        }"#;
+
+        let manifest = MarketplaceAdapter::parse(json).unwrap();
+        let configs = MarketplaceAdapter::plugin_to_skill_configs(&manifest.plugins[0]).unwrap();
+        assert_eq!(configs.len(), 2);
+    }
+
+    #[test]
+    fn test_github_url_construction() {
+        // Test GitHubFetcher URL construction for nested plugin.json
+        let url = crate::registry::marketplace::github_fetcher::GitHubFetcher::construct_plugin_json_url(
+            "github:anthropics/life-sciences",
+            "./10x-genomics",
+            None,
+        ).unwrap();
+
+        assert_eq!(
+            url,
+            "https://raw.githubusercontent.com/anthropics/life-sciences/main/10x-genomics/.claude-plugin/plugin.json"
+        );
+    }
+
+    // === PHASE 3: NESTED PLUGIN MERGING TESTS (RED) ===
+
+    #[test]
+    fn test_merge_plugin_with_nested_mcp_url() {
+        // Test merging marketplace entry with nested plugin.json
+        // Marketplace entry has basic info, nested plugin has mcpServers URL
+        let marketplace_entry = serde_json::json!({
+            "name": "10x-genomics",
+            "source": "./10x-genomics",
+            "description": "Marketplace description",
+            "category": "life-sciences"
+        });
+
+        let nested_plugin = serde_json::json!({
+            "name": "10x-genomics",
+            "version": "1.0.0",
+            "mcpServers": "https://github.com/10XGenomics/txg-mcp/releases/latest/download/txg-node.mcpb"
+        });
+
+        // This will fail until we implement merge_plugin_with_nested
+        let merged = crate::registry::marketplace::merge_nested::merge_plugin_with_nested(
+            &marketplace_entry,
+            &nested_plugin,
+        ).unwrap();
+
+        assert_eq!(merged.name, "10x-genomics");
+        assert_eq!(merged.version, "1.0.0"); // From nested
+        assert_eq!(merged.description, "Marketplace description"); // From marketplace
+        assert_eq!(merged.category, Some("life-sciences".to_string())); // From marketplace
+        assert!(merged.mcp_servers.is_some());
+    }
+
+    // === REAL MARKETPLACE VALIDATION ===
+
+    #[test]
+    fn test_parse_real_anthropic_skills_marketplace() {
+        // Real marketplace.json from anthropics/skills
+        let json = r#"{
+            "name": "anthropic-agent-skills",
+            "owner": {"name": "Keith Lazuka"},
+            "metadata": {
+                "description": "Anthropic example skills",
+                "version": "1.0.0"
+            },
+            "plugins": [{
+                "name": "document-skills",
+                "description": "Document processing skills",
+                "source": "./",
+                "strict": false,
+                "skills": ["./skills/xlsx", "./skills/docx", "./skills/pptx", "./skills/pdf"]
+            }]
+        }"#;
+
+        let manifest = MarketplaceAdapter::parse(json).unwrap();
+        assert_eq!(manifest.marketplace.name, Some("anthropic-agent-skills".to_string()));
+        assert_eq!(manifest.marketplace.description, Some("Anthropic example skills".to_string()));
+        assert_eq!(manifest.plugins.len(), 1);
+
+        let plugin = &manifest.plugins[0];
+        assert_eq!(plugin.name, "document-skills");
+        assert_eq!(plugin.strict, Some(false));
+
+        // Test skills expansion
+        let configs = MarketplaceAdapter::plugin_to_skill_configs(plugin).unwrap();
+        assert_eq!(configs.len(), 4);
+        assert_eq!(configs[0].source, "local:./skills/xlsx");
+        assert_eq!(configs[1].source, "local:./skills/docx");
     }
 }

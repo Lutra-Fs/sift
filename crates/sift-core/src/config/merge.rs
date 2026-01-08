@@ -97,15 +97,15 @@ fn merge_mcp_entry(base: &mut McpConfigEntry, overlay: McpConfigEntry) {
         let base_runtime = crate::mcp::RuntimeType::try_from(base.runtime.as_str());
         let overlay_runtime = crate::mcp::RuntimeType::try_from(overlay.runtime.as_str());
 
-        if let (Ok(base_rt), Ok(overlay_rt)) = (base_runtime, overlay_runtime) {
-            if !base_rt.is_compatible_with(&overlay_rt) {
-                eprintln!(
-                    "Warning: MCP config '{}' runtime change (base: {}, overlay: {})\n\
-                     Incompatible runtime change detected.\n\
-                     Compatible: Node ↔ Bun. Incompatible: Docker, Python, Shell, and others.",
-                    base.source, base.runtime, overlay.runtime
-                );
-            }
+        if let (Ok(base_rt), Ok(overlay_rt)) = (base_runtime, overlay_runtime)
+            && !base_rt.is_compatible_with(&overlay_rt)
+        {
+            eprintln!(
+                "Warning: MCP config '{}' runtime change (base: {}, overlay: {})\n\
+                 Incompatible runtime change detected.\n\
+                 Compatible: Node ↔ Bun. Incompatible: Docker, Python, Shell, and others.",
+                base.source, base.runtime, overlay.runtime
+            );
         }
     }
 
