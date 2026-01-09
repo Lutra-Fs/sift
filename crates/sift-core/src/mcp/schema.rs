@@ -16,6 +16,18 @@ pub enum TransportType {
     Http,
 }
 
+impl TryFrom<&str> for TransportType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_lowercase().as_str() {
+            "stdio" => Ok(TransportType::Stdio),
+            "http" => Ok(TransportType::Http),
+            _ => anyhow::bail!("Invalid transport: '{}'. Valid values: stdio, http", value),
+        }
+    }
+}
+
 /// Complete MCP server configuration from sift.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpConfig {

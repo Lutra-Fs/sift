@@ -81,13 +81,11 @@ fn run_cli(command: Commands) {
         Commands::Uninstall { kind, name } => {
             println!("Uninstalling {kind}: {name}");
         }
-        Commands::List { kind } => {
-            match kind.as_deref() {
-                Some("mcp") => println!("Listing MCP servers"),
-                Some("skill") => println!("Listing skills"),
-                Some(_) | None => println!("Listing all"),
-            }
-        }
+        Commands::List { kind } => match kind.as_deref() {
+            Some("mcp") => println!("Listing MCP servers"),
+            Some("skill") => println!("Listing skills"),
+            Some(_) | None => println!("Listing all"),
+        },
         Commands::Config { scope } => {
             println!("Setting config scope to: {scope}");
         }

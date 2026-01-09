@@ -86,9 +86,12 @@ impl ClientConfig {
                 link_mode: LinkMode::Auto,
                 capabilities: Some(ClientCapabilities {
                     supports_global: true,
-                    supports_project: false,
-                    supports_symlinked_skills: false,
-                    skill_delivery: SkillDeliveryMode::ConfigReference,
+                    supports_project: true,
+                    supports_symlinked_skills: true,
+                    skill_delivery: SkillDeliveryMode::Filesystem {
+                        global_path: "~/.gemini/skills".to_string(),
+                        project_path: Some("./.gemini/skills".to_string()),
+                    },
                     mcp_config_format: McpConfigFormat::Generic,
                     supported_transports: {
                         let mut set = HashSet::new();
@@ -103,9 +106,12 @@ impl ClientConfig {
                 link_mode: LinkMode::Auto,
                 capabilities: Some(ClientCapabilities {
                     supports_global: true,
-                    supports_project: false,
-                    supports_symlinked_skills: false,
-                    skill_delivery: SkillDeliveryMode::ConfigReference,
+                    supports_project: true,
+                    supports_symlinked_skills: true,
+                    skill_delivery: SkillDeliveryMode::Filesystem {
+                        global_path: "~/.codex/skills".to_string(),
+                        project_path: Some("./.codex/skills".to_string()),
+                    },
                     mcp_config_format: McpConfigFormat::Generic,
                     supported_transports: {
                         let mut set = HashSet::new();
@@ -159,7 +165,7 @@ impl ClientConfig {
                 supported_transports: {
                     let mut set = HashSet::new();
                     set.insert("stdio".to_string());
-                    set.insert("sse".to_string());
+                    set.insert("http".to_string());
                     set
                 },
             }),

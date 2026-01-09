@@ -4,6 +4,7 @@
 //! Global -> Project -> Project-Local
 
 use super::schema::{McpConfigEntry, ProjectOverride, SiftConfig, SkillConfigEntry};
+use anyhow::Context;
 use std::path::Path;
 
 /// Merge multiple configuration layers
@@ -25,13 +26,15 @@ pub fn merge_configs(
 
     // Merge project config
     if let Some(proj) = project {
-        merge_sift_config(&mut merged, proj)?;
+        merge_sift_config(&mut merged, proj, false)?; // is_global = false
     }
 
     // Extract and apply project-local override from global
     let project_path_buf = project_path.to_path_buf();
-    let override_config = merged.get_project_override(&project_path_buf).cloned();
-    if let Some(override_config) = override_config {
+    let override_config_to_apply = merged
+        .get_project_override(&project_path_buf)
+        .map(|(_k, v)| v.clone());
+    if let Some(override_config) = override_config_to_apply {
         apply_project_override(&mut merged, &override_config)?;
     }
 
@@ -43,7 +46,11 @@ pub fn merge_configs(
 }
 
 /// Merge two SiftConfig instances
-fn merge_sift_config(base: &mut SiftConfig, layer: SiftConfig) -> anyhow::Result<()> {
+fn merge_sift_config(
+    base: &mut SiftConfig,
+    layer: SiftConfig,
+    is_global_layer: bool,
+) -> anyhow::Result<()> {
     // Merge MCP configs (deep merge for env vars)
     for (key, entry) in layer.mcp {
         base.mcp
@@ -73,9 +80,20 @@ fn merge_sift_config(base: &mut SiftConfig, layer: SiftConfig) -> anyhow::Result
         base.registry.entry(key).or_insert(entry);
     }
 
-    // Merge project overrides (only in global config)
-    for (key, override_config) in layer.projects {
-        base.projects.entry(key).or_insert(override_config);
+    // ONLY merge projects from global layer
+    if !layer.projects.is_empty() {
+        if is_global_layer {
+            for (key, override_config) in layer.projects {
+                base.projects.entry(key).or_insert(override_config);
+            }
+        } else {
+            // Warn but don't fail - ignore projects section from project layers
+            eprintln!(
+                "Warning: [projects.*] section found in project config (./sift.toml). \
+                 This section is only allowed in global config (~/.config/sift/sift.toml). \
+                 The projects section will be ignored."
+            );
+        }
     }
 
     Ok(())
@@ -83,44 +101,37 @@ fn merge_sift_config(base: &mut SiftConfig, layer: SiftConfig) -> anyhow::Result
 
 /// Merge MCP config entries
 fn merge_mcp_entry(base: &mut McpConfigEntry, overlay: McpConfigEntry) {
-    // Warn on transport mismatch (but allow override, like Claude Code)
-    if base.transport != overlay.transport {
-        eprintln!(
-            "Warning: MCP config '{}' transport mismatch (base: {}, overlay: {})\n\
-             STDIO and HTTP are fundamentally different configurations. Using overlay transport: {}",
-            base.source, base.transport, overlay.transport, overlay.transport
-        );
+    // Handle reset flags first
+    if overlay.reset_targets {
+        base.targets = None;
     }
-
-    // For STDIO, validate runtime compatibility
-    if base.transport == "stdio" && overlay.transport == "stdio" {
-        let base_runtime = crate::mcp::RuntimeType::try_from(base.runtime.as_str());
-        let overlay_runtime = crate::mcp::RuntimeType::try_from(overlay.runtime.as_str());
-
-        if let (Ok(base_rt), Ok(overlay_rt)) = (base_runtime, overlay_runtime)
-            && !base_rt.is_compatible_with(&overlay_rt)
-        {
-            eprintln!(
-                "Warning: MCP config '{}' runtime change (base: {}, overlay: {})\n\
-                 Incompatible runtime change detected.\n\
-                 Compatible: Node ↔ Bun. Incompatible: Docker, Python, Shell, and others.",
-                base.source, base.runtime, overlay.runtime
-            );
+    if overlay.reset_ignore_targets {
+        base.ignore_targets = None;
+    }
+    if overlay.reset_env_all {
+        base.env.clear();
+    } else if let Some(keys) = overlay.reset_env {
+        for key in keys {
+            base.env.remove(&key);
         }
     }
 
-    // Protect non-default runtime from being overridden by default
-    // Only override if: overlay is non-default OR base is already default
-    if overlay.runtime != "node" || base.runtime == "node" {
-        base.runtime = overlay.runtime;
+    // Only override runtime/transport if overlay explicitly set a value (Some)
+    // Don't protect default values with Option wrapper - we want explicit override
+    if let Some(overlay_runtime) = overlay.runtime {
+        base.runtime = Some(overlay_runtime);
+    }
+    if let Some(overlay_transport) = overlay.transport {
+        base.transport = Some(overlay_transport);
+    }
+    if let Some(overlay_targets) = overlay.targets {
+        base.targets = Some(overlay_targets);
+    }
+    if let Some(overlay_ignore) = overlay.ignore_targets {
+        base.ignore_targets = Some(overlay_ignore);
     }
 
-    // Similar protection for transport
-    if overlay.transport != "stdio" || base.transport == "stdio" {
-        base.transport = overlay.transport;
-    }
-
-    // Rest of merge logic (source, args, url, etc.)
+    // Rest of merge logic (source, args, url, headers, env)
     if !overlay.source.is_empty() {
         base.source = overlay.source;
     }
@@ -130,39 +141,40 @@ fn merge_mcp_entry(base: &mut McpConfigEntry, overlay: McpConfigEntry) {
     if overlay.url.is_some() {
         base.url = overlay.url;
     }
-    if overlay.targets.is_some() {
-        base.targets = overlay.targets;
-    }
-    if overlay.ignore_targets.is_some() {
-        base.ignore_targets = overlay.ignore_targets;
-    }
     // Deep merge headers
     for (key, value) in overlay.headers {
         base.headers.insert(key, value);
     }
-    // Deep merge env vars
-    for (key, value) in overlay.env {
-        base.env.insert(key, value);
+    // Deep merge env vars (only if not reset_env_all)
+    if !overlay.reset_env_all {
+        for (key, value) in overlay.env {
+            base.env.insert(key, value);
+        }
     }
 }
 
 /// Merge skill config entries
 fn merge_skill_entry(base: &mut SkillConfigEntry, overlay: SkillConfigEntry) {
-    // Protect non-default version from being overridden by default
-    // Only override if: overlay is non-default OR base is already default
-    if overlay.version != "latest" || base.version == "latest" {
-        base.version = overlay.version;
+    // Handle reset flag first
+    if overlay.reset_version {
+        base.version = None;
+    }
+
+    // Only override if overlay explicitly set a value (Some)
+    // Don't protect default values with Option wrapper - we want explicit override
+    if let Some(overlay_version) = overlay.version {
+        base.version = Some(overlay_version);
+    }
+    if let Some(overlay_targets) = overlay.targets {
+        base.targets = Some(overlay_targets);
+    }
+    if let Some(overlay_ignore) = overlay.ignore_targets {
+        base.ignore_targets = Some(overlay_ignore);
     }
 
     // Rest of merge logic
     if !overlay.source.is_empty() {
         base.source = overlay.source;
-    }
-    if overlay.targets.is_some() {
-        base.targets = overlay.targets;
-    }
-    if overlay.ignore_targets.is_some() {
-        base.ignore_targets = overlay.ignore_targets;
     }
 }
 
@@ -192,7 +204,8 @@ fn apply_project_override(
     // Apply MCP overrides (only env and runtime)
     for (key, mcp_override) in &override_config.mcp {
         if let Some(existing) = base.mcp.get_mut(key) {
-            apply_mcp_override(existing, mcp_override);
+            apply_mcp_override(existing, mcp_override)
+                .with_context(|| format!("Invalid MCP override for '{key}'"))?;
         }
     }
 
@@ -210,14 +223,18 @@ fn apply_project_override(
 fn apply_mcp_override(
     base: &mut McpConfigEntry,
     override_config: &crate::config::schema::McpOverrideEntry,
-) {
+) -> anyhow::Result<()> {
     if let Some(runtime) = &override_config.runtime {
-        base.runtime = runtime.clone();
+        crate::mcp::RuntimeType::try_from(runtime.as_str())
+            .with_context(|| format!("Invalid runtime override: '{runtime}'"))?;
+        base.runtime = Some(runtime.clone());
     }
     // Merge env vars
     for (key, value) in &override_config.env {
         base.env.insert(key.clone(), value.clone());
     }
+
+    Ok(())
 }
 
 /// Apply skill override to an existing entry
@@ -226,7 +243,7 @@ fn apply_skill_override(
     override_config: &crate::config::schema::SkillOverrideEntry,
 ) {
     if let Some(version) = &override_config.version {
-        base.version = version.clone();
+        base.version = Some(version.clone());
     }
 }
 
@@ -237,24 +254,29 @@ mod tests {
 
     fn create_mcp_entry(source: &str, runtime: &str) -> McpConfigEntry {
         McpConfigEntry {
-            transport: "stdio".to_string(),
+            transport: Some("stdio".to_string()),
             source: source.to_string(),
-            runtime: runtime.to_string(),
+            runtime: Some(runtime.to_string()),
             args: vec![],
             url: None,
             headers: HashMap::new(),
             targets: None,
             ignore_targets: None,
             env: HashMap::new(),
+            reset_targets: false,
+            reset_ignore_targets: false,
+            reset_env: None,
+            reset_env_all: false,
         }
     }
 
     fn create_skill_entry(source: &str, version: &str) -> SkillConfigEntry {
         SkillConfigEntry {
             source: source.to_string(),
-            version: version.to_string(),
+            version: Some(version.to_string()),
             targets: None,
             ignore_targets: None,
+            reset_version: false,
         }
     }
 
@@ -320,9 +342,9 @@ mod tests {
     #[test]
     fn test_merge_mcp_entry() {
         let mut base = McpConfigEntry {
-            transport: "stdio".to_string(),
+            transport: Some("stdio".to_string()),
             source: "registry:base".to_string(),
-            runtime: "node".to_string(),
+            runtime: Some("node".to_string()),
             args: vec!["--arg1".to_string()],
             url: None,
             headers: HashMap::new(),
@@ -333,12 +355,16 @@ mod tests {
                 map.insert("BASE_VAR".to_string(), "base_value".to_string());
                 map
             },
+            reset_targets: false,
+            reset_ignore_targets: false,
+            reset_env: None,
+            reset_env_all: false,
         };
 
         let overlay = McpConfigEntry {
-            transport: "stdio".to_string(),
+            transport: Some("stdio".to_string()),
             source: "registry:overlay".to_string(),
-            runtime: "docker".to_string(),
+            runtime: Some("docker".to_string()),
             args: vec!["--arg2".to_string()],
             url: None,
             headers: HashMap::new(),
@@ -349,12 +375,16 @@ mod tests {
                 map.insert("OVERLAY_VAR".to_string(), "overlay_value".to_string());
                 map
             },
+            reset_targets: false,
+            reset_ignore_targets: false,
+            reset_env: None,
+            reset_env_all: false,
         };
 
         merge_mcp_entry(&mut base, overlay);
 
         assert_eq!(base.source, "registry:overlay");
-        assert_eq!(base.runtime, "docker");
+        assert_eq!(base.runtime, Some("docker".to_string()));
         assert_eq!(base.args, vec!["--arg2".to_string()]);
         assert!(base.targets.is_some());
         assert_eq!(base.env.len(), 2);
@@ -366,33 +396,36 @@ mod tests {
     fn test_merge_skill_entry() {
         let mut base = SkillConfigEntry {
             source: "registry:base".to_string(),
-            version: "^1.0".to_string(),
+            version: Some("^1.0".to_string()),
             targets: None,
             ignore_targets: None,
+            reset_version: false,
         };
 
         let overlay = SkillConfigEntry {
             source: "registry:overlay".to_string(),
-            version: "^2.0".to_string(),
+            version: Some("^2.0".to_string()),
             targets: Some(vec!["claude-code".to_string()]),
             ignore_targets: None,
+            reset_version: false,
         };
 
         merge_skill_entry(&mut base, overlay);
 
         assert_eq!(base.source, "registry:overlay");
-        assert_eq!(base.version, "^2.0");
+        assert_eq!(base.version, Some("^2.0".to_string()));
         assert!(base.targets.is_some());
     }
 
     #[test]
-    fn test_merge_mcp_entry_preserve_docker_runtime() {
+    fn test_merge_mcp_entry_explicit_override() {
+        // With Option wrapper, explicit values always override
         let mut base = create_mcp_entry("registry:postgres", "docker");
-        let overlay = create_mcp_entry("registry:postgres", "node"); // default
+        let overlay = create_mcp_entry("registry:postgres", "node");
 
         merge_mcp_entry(&mut base, overlay);
 
-        assert_eq!(base.runtime, "docker"); // Should preserve docker
+        assert_eq!(base.runtime, Some("node".to_string())); // Overlay's explicit value wins
     }
 
     #[test]
@@ -403,60 +436,68 @@ mod tests {
 
         merge_mcp_entry(&mut base, overlay);
 
-        assert_eq!(base.runtime, "bun"); // Should allow node→bun
+        assert_eq!(base.runtime, Some("bun".to_string())); // Explicit bun wins
     }
 
     #[test]
-    fn test_merge_mcp_entry_warn_on_incompatible_runtime_swap() {
+    fn test_merge_mcp_entry_explicit_non_default_override() {
         let mut base = create_mcp_entry("registry:test", "docker");
         let overlay = create_mcp_entry("registry:test", "python"); // non-default
 
-        // Should warn but allow
         merge_mcp_entry(&mut base, overlay);
 
-        assert_eq!(base.runtime, "python"); // Override happens for non-default overlay
+        assert_eq!(base.runtime, Some("python".to_string())); // Explicit python wins
     }
 
     #[test]
     fn test_merge_mcp_entry_warn_on_transport_mismatch() {
         let mut base = McpConfigEntry {
-            transport: "stdio".to_string(),
+            transport: Some("stdio".to_string()),
             source: "registry:test".to_string(),
-            runtime: "node".to_string(),
+            runtime: Some("node".to_string()),
             args: vec![],
             url: None,
             headers: HashMap::new(),
             targets: None,
             ignore_targets: None,
             env: HashMap::new(),
+            reset_targets: false,
+            reset_ignore_targets: false,
+            reset_env: None,
+            reset_env_all: false,
         };
         let overlay = McpConfigEntry {
-            transport: "http".to_string(),
+            transport: Some("http".to_string()),
             source: "https://example.com/mcp".to_string(),
-            runtime: "node".to_string(),
+            runtime: Some("node".to_string()),
             args: vec![],
             url: Some("https://example.com/mcp".to_string()),
             headers: HashMap::new(),
             targets: None,
             ignore_targets: None,
             env: HashMap::new(),
+            reset_targets: false,
+            reset_ignore_targets: false,
+            reset_env: None,
+            reset_env_all: false,
         };
 
         // Should warn but allow
         merge_mcp_entry(&mut base, overlay);
 
-        assert_eq!(base.transport, "http"); // Override happens despite warning
+        assert_eq!(base.transport, Some("http".to_string())); // Override happens despite warning
         assert_eq!(base.url, Some("https://example.com/mcp".to_string()));
     }
 
     #[test]
-    fn test_merge_skill_entry_preserve_pinned_version() {
+    fn test_merge_skill_entry_explicit_override() {
+        // With Option wrapper, explicit values always override
         let mut base = create_skill_entry("registry:test", "^1.0");
-        let overlay = create_skill_entry("registry:test", "latest"); // default
+        let overlay = create_skill_entry("registry:test", "latest"); // explicit "latest"
 
         merge_skill_entry(&mut base, overlay);
 
-        assert_eq!(base.version, "^1.0"); // Should preserve pinned version
+        assert_eq!(base.version, Some("latest".to_string())); // Overlay's explicit value wins
     }
 
     #[test]
@@ -465,9 +506,9 @@ mod tests {
         config.mcp.insert(
             "test-mcp".to_string(),
             McpConfigEntry {
-                transport: "stdio".to_string(),
+                transport: Some("stdio".to_string()),
                 source: "registry:test".to_string(),
-                runtime: "node".to_string(),
+                runtime: Some("node".to_string()),
                 args: vec![],
                 url: None,
                 headers: HashMap::new(),
@@ -478,6 +519,10 @@ mod tests {
                     map.insert("BASE_VAR".to_string(), "base_value".to_string());
                     map
                 },
+                reset_targets: false,
+                reset_ignore_targets: false,
+                reset_env: None,
+                reset_env_all: false,
             },
         );
 
@@ -497,7 +542,7 @@ mod tests {
         apply_project_override(&mut config, &override_config).unwrap();
 
         let mcp = config.mcp.get("test-mcp").unwrap();
-        assert_eq!(mcp.runtime, "docker");
+        assert_eq!(mcp.runtime, Some("docker".to_string()));
         assert_eq!(mcp.env.len(), 2);
         assert!(mcp.env.contains_key("BASE_VAR"));
         assert!(mcp.env.contains_key("OVERRIDE_VAR"));
@@ -509,15 +554,19 @@ mod tests {
         global.mcp.insert(
             "test-mcp".to_string(),
             McpConfigEntry {
-                transport: "stdio".to_string(),
+                transport: Some("stdio".to_string()),
                 source: "registry:test".to_string(),
-                runtime: "node".to_string(),
+                runtime: Some("node".to_string()),
                 args: vec![],
                 url: None,
                 headers: HashMap::new(),
                 targets: None,
                 ignore_targets: None,
                 env: HashMap::new(),
+                reset_targets: false,
+                reset_ignore_targets: false,
+                reset_env: None,
+                reset_env_all: false,
             },
         );
 
@@ -541,7 +590,7 @@ mod tests {
         let merged = merge_configs(Some(global), None, project_path).unwrap();
 
         let mcp = merged.mcp.get("test-mcp").unwrap();
-        assert_eq!(mcp.runtime, "docker");
+        assert_eq!(mcp.runtime, Some("docker".to_string()));
     }
 
     #[test]
@@ -585,5 +634,29 @@ mod tests {
 
         // Projects section should be cleared after applying overrides
         assert!(merged.projects.is_empty());
+    }
+
+    #[test]
+    fn test_apply_project_override_rejects_invalid_runtime() {
+        let mut config = SiftConfig::new();
+        config.mcp.insert(
+            "test-mcp".to_string(),
+            create_mcp_entry("registry:test", "node"),
+        );
+
+        let mut override_config = ProjectOverride::default();
+        override_config.mcp.insert(
+            "test-mcp".to_string(),
+            crate::config::schema::McpOverrideEntry {
+                runtime: Some("doker".to_string()),
+                env: HashMap::new(),
+            },
+        );
+
+        let result = apply_project_override(&mut config, &override_config);
+        assert!(
+            result.is_err(),
+            "apply_project_override() must fail for invalid override runtime"
+        );
     }
 }

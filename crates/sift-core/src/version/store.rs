@@ -16,7 +16,7 @@ use crate::version::lock::Lockfile;
 /// - Unix: `XDG_STATE_HOME/sift/locks/` (fallback: `~/.local/state/sift/locks/`)
 /// - Windows: `%LOCALAPPDATA%\sift\locks\`
 ///
-/// Per-project lockfiles: `projects/<project_key>.lock.json`
+/// Per-project lockfiles: `<project_key>.lock.json`
 /// Global lockfile: `global.lock.json`
 pub struct LockfileStore;
 
@@ -29,7 +29,7 @@ impl LockfileStore {
     pub fn default_state_dir() -> anyhow::Result<PathBuf> {
         let base = if cfg!(unix) {
             dirs::state_dir()
-                .or_else(|| dirs::data_local_dir())
+                .or_else(dirs::data_local_dir)
                 .ok_or_else(|| anyhow::anyhow!("Cannot determine state directory"))?
         } else {
             dirs::data_local_dir()
@@ -127,7 +127,15 @@ impl LockfileStore {
         fs::write(&tmp_path, bytes)
             .with_context(|| format!("Failed to write tmp lockfile: {}", tmp_path.display()))?;
 
-        // Atomic rename
+        // Atomic rename (remove target first on Windows for replace semantics)
+        if lockfile_path.exists() {
+            fs::remove_file(&lockfile_path).with_context(|| {
+                format!(
+                    "Failed to remove existing lockfile: {}",
+                    lockfile_path.display()
+                )
+            })?;
+        }
         fs::rename(&tmp_path, &lockfile_path)
             .with_context(|| format!("Failed to rename tmp lockfile: {}", tmp_path.display()))?;
 

@@ -38,16 +38,16 @@ pub struct SiftConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpConfigEntry {
     /// Transport type: stdio or http (defaults to stdio)
-    #[serde(default = "default_transport")]
-    pub transport: String,
+    #[serde(default)]
+    pub transport: Option<String>,
 
     /// STDIO: Source: "registry:name" or "local:/path/to/server"
     #[serde(default)]
     pub source: String,
 
-    /// STDIO: Runtime: docker, node, python, bun
-    #[serde(default = "default_runtime")]
-    pub runtime: String,
+    /// STDIO: Runtime: docker, node, python, bun, shell
+    #[serde(default)]
+    pub runtime: Option<String>,
 
     /// STDIO: Command arguments
     #[serde(default)]
@@ -72,31 +72,37 @@ pub struct McpConfigEntry {
     /// Environment variables
     #[serde(default)]
     pub env: HashMap<String, String>,
+
+    // RESET FLAGS - for clearing inherited values
+    /// Reset targets to None (clear inherited whitelist)
+    #[serde(default)]
+    pub reset_targets: bool,
+
+    /// Reset ignore_targets to None (clear inherited blacklist)
+    #[serde(default)]
+    pub reset_ignore_targets: bool,
+
+    /// Reset specific environment variables by key
+    #[serde(default)]
+    pub reset_env: Option<Vec<String>>,
+
+    /// Reset all environment variables to empty
+    #[serde(default)]
+    pub reset_env_all: bool,
 }
 
-fn default_runtime() -> String {
-    "node".to_string()
-}
+impl TryFrom<McpConfigEntry> for crate::mcp::McpConfig {
+    type Error = anyhow::Error;
 
-fn default_transport() -> String {
-    "stdio".to_string()
-}
+    fn try_from(entry: McpConfigEntry) -> Result<Self, Self::Error> {
+        // After Phase 2: runtime and transport are Option<String>
+        let runtime_str = entry.runtime.as_deref().unwrap_or("node");
+        let runtime = crate::mcp::RuntimeType::try_from(runtime_str)?;
 
-impl From<McpConfigEntry> for crate::mcp::McpConfig {
-    fn from(entry: McpConfigEntry) -> Self {
-        let runtime = match entry.runtime.as_str() {
-            "docker" => crate::mcp::RuntimeType::Docker,
-            "python" => crate::mcp::RuntimeType::Python,
-            "bun" => crate::mcp::RuntimeType::Bun,
-            _ => crate::mcp::RuntimeType::Node,
-        };
+        let transport_str = entry.transport.as_deref().unwrap_or("stdio");
+        let transport = crate::mcp::TransportType::try_from(transport_str)?;
 
-        let transport = match entry.transport.as_str() {
-            "http" => crate::mcp::TransportType::Http,
-            _ => crate::mcp::TransportType::Stdio,
-        };
-
-        crate::mcp::McpConfig {
+        Ok(crate::mcp::McpConfig {
             transport,
             source: entry.source,
             runtime,
@@ -106,7 +112,7 @@ impl From<McpConfigEntry> for crate::mcp::McpConfig {
             targets: entry.targets,
             ignore_targets: entry.ignore_targets,
             env: entry.env,
-        }
+        })
     }
 }
 
@@ -117,8 +123,8 @@ pub struct SkillConfigEntry {
     pub source: String,
 
     /// Version constraint: semver, git SHA, or "latest"
-    #[serde(default = "default_skill_version")]
-    pub version: String,
+    #[serde(default)]
+    pub version: Option<String>,
 
     /// Target control (whitelist)
     #[serde(default)]
@@ -127,20 +133,24 @@ pub struct SkillConfigEntry {
     /// Ignore targets (blacklist)
     #[serde(default)]
     pub ignore_targets: Option<Vec<String>>,
+
+    // RESET FLAG
+    /// Reset version to None (clear inherited version)
+    #[serde(default)]
+    pub reset_version: bool,
 }
 
-fn default_skill_version() -> String {
-    "latest".to_string()
-}
+impl TryFrom<SkillConfigEntry> for crate::skills::SkillConfig {
+    type Error = anyhow::Error;
 
-impl From<SkillConfigEntry> for crate::skills::SkillConfig {
-    fn from(entry: SkillConfigEntry) -> Self {
-        crate::skills::SkillConfig {
+    fn try_from(entry: SkillConfigEntry) -> Result<Self, Self::Error> {
+        let version_str = entry.version.as_deref().unwrap_or("latest");
+        Ok(crate::skills::SkillConfig {
             source: entry.source,
-            version: entry.version,
+            version: version_str.to_string(),
             targets: entry.targets,
             ignore_targets: entry.ignore_targets,
-        }
+        })
     }
 }
 
@@ -168,14 +178,16 @@ fn default_client_enabled() -> bool {
     true
 }
 
-impl From<ClientConfigEntry> for crate::client::ClientConfig {
-    fn from(entry: ClientConfigEntry) -> Self {
-        crate::client::ClientConfig {
+impl TryFrom<ClientConfigEntry> for crate::client::ClientConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(entry: ClientConfigEntry) -> Result<Self, Self::Error> {
+        Ok(crate::client::ClientConfig {
             enabled: entry.enabled,
             source: entry.source,
             link_mode: entry.link_mode.unwrap_or_default(),
             capabilities: None, // Would need JSON deserialization for full support
-        }
+        })
     }
 }
 
@@ -252,16 +264,20 @@ pub struct McpOverrideEntry {
 
 impl McpOverrideEntry {
     /// Convert to full McpConfigOverride
-    pub fn to_override(&self) -> crate::mcp::McpConfigOverride {
-        crate::mcp::McpConfigOverride {
-            runtime: self.runtime.as_ref().map(|r| match r.as_str() {
-                "docker" => crate::mcp::RuntimeType::Docker,
-                "python" => crate::mcp::RuntimeType::Python,
-                "bun" => crate::mcp::RuntimeType::Bun,
-                _ => crate::mcp::RuntimeType::Node,
-            }),
+    pub fn to_override(&self) -> anyhow::Result<crate::mcp::McpConfigOverride> {
+        let runtime = if let Some(runtime_str) = self.runtime.as_deref() {
+            Some(
+                crate::mcp::RuntimeType::try_from(runtime_str)
+                    .with_context(|| format!("Invalid runtime override: '{runtime_str}'"))?,
+            )
+        } else {
+            None
+        };
+
+        Ok(crate::mcp::McpConfigOverride {
+            runtime,
             env: self.env.clone(),
-        }
+        })
     }
 }
 
@@ -289,9 +305,53 @@ impl SiftConfig {
 
     /// Validate the configuration
     pub fn validate(&self) -> anyhow::Result<()> {
+        // Validate project overrides in the global config.
+        for (project_key, override_config) in &self.projects {
+            for (mcp_name, mcp_override) in &override_config.mcp {
+                if let Some(runtime_str) = mcp_override.runtime.as_deref() {
+                    crate::mcp::RuntimeType::try_from(runtime_str).with_context(|| {
+                        format!(
+                            "Invalid runtime override for project '{project_key}', MCP '{mcp_name}': '{runtime_str}'"
+                        )
+                    })?;
+                }
+            }
+        }
+
         // Validate each MCP server config
         for (name, entry) in &self.mcp {
-            let config: crate::mcp::McpConfig = entry.clone().into();
+            // Reset flag mutual exclusion (entry-level validation)
+            if entry.reset_targets && entry.targets.is_some() {
+                anyhow::bail!(
+                    "MCP server '{}': Cannot specify both reset_targets=true and targets=[...]. \
+                     Use reset_targets=true to clear, or targets=[...] to set specific values.",
+                    name
+                );
+            }
+            if entry.reset_ignore_targets && entry.ignore_targets.is_some() {
+                anyhow::bail!(
+                    "MCP server '{}': Cannot specify both reset_ignore_targets=true and ignore_targets=[...].",
+                    name
+                );
+            }
+            if entry.reset_env_all && entry.reset_env.is_some() {
+                anyhow::bail!(
+                    "MCP server '{}': Cannot specify both reset_env_all=true and reset_env=[...]. \
+                     Use reset_env_all=true to clear all, or reset_env=[...] to clear specific keys.",
+                    name
+                );
+            }
+            if entry.reset_env_all && !entry.env.is_empty() {
+                anyhow::bail!(
+                    "MCP server '{}': Cannot specify both reset_env_all=true and env={{...}} in same config layer.",
+                    name
+                );
+            }
+
+            let config: crate::mcp::McpConfig = entry
+                .clone()
+                .try_into()
+                .with_context(|| format!("Invalid MCP server configuration: '{}'", name))?;
             config
                 .validate()
                 .with_context(|| format!("Invalid MCP server configuration: '{}'", name))?;
@@ -299,7 +359,18 @@ impl SiftConfig {
 
         // Validate each skill config
         for (name, entry) in &self.skill {
-            let config: crate::skills::SkillConfig = entry.clone().into();
+            // Reset flag mutual exclusion
+            if entry.reset_version && entry.version.is_some() {
+                anyhow::bail!(
+                    "Skill '{}': Cannot specify both reset_version=true and version=\"...\".",
+                    name
+                );
+            }
+
+            let config: crate::skills::SkillConfig = entry
+                .clone()
+                .try_into()
+                .with_context(|| format!("Invalid skill configuration: '{}'", name))?;
             config
                 .validate()
                 .with_context(|| format!("Invalid skill configuration: '{}'", name))?;
@@ -307,7 +378,19 @@ impl SiftConfig {
 
         // Validate each client config
         for (name, entry) in &self.clients {
-            let config: crate::client::ClientConfig = entry.clone().into();
+            // Warn about unimplemented capabilities override
+            if entry.capabilities.is_some() {
+                eprintln!(
+                    "Warning: Client '{}' has capabilities override, but this is currently ignored. \
+                     The capabilities field is not yet supported and will be removed from the final config.",
+                    name
+                );
+            }
+
+            let config: crate::client::ClientConfig = entry
+                .clone()
+                .try_into()
+                .with_context(|| format!("Invalid client configuration: '{}'", name))?;
             config
                 .validate()
                 .with_context(|| format!("Invalid client configuration: '{}'", name))?;
@@ -333,16 +416,30 @@ impl SiftConfig {
     }
 
     /// Get the project override for a given path
-    pub fn get_project_override(&self, path: &Path) -> Option<&ProjectOverride> {
-        // Try exact match first
-        if let Some(override_config) = self.projects.get(&path.to_string_lossy().to_string()) {
-            return Some(override_config);
+    ///
+    /// Returns `(project_key, override_config)` where `project_key` is the
+    /// matching path from the projects map.
+    ///
+    /// Path matching is deterministic: tries exact match first, then longest
+    /// prefix match (sorted by path length descending).
+    ///
+    /// Note: Paths should be normalized before calling this method.
+    /// Use `Path::canonicalize()` for symlinks, or normalize with
+    /// `Path::components()` for relative path resolution.
+    pub fn get_project_override(&self, path: &Path) -> Option<(String, &ProjectOverride)> {
+        // Try exact match first - use get_key_value to get the actual key reference
+        let path_str = path.to_string_lossy().to_string();
+        if let Some((key, override_config)) = self.projects.get_key_value(&path_str) {
+            return Some((key.clone(), override_config));
         }
 
-        // Try to find by checking if path starts with any project key
-        for (project_path, override_config) in &self.projects {
+        // Sort by length (descending) for longest prefix match
+        let mut sorted: Vec<_> = self.projects.iter().collect();
+        sorted.sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
+
+        for (project_path, override_config) in sorted {
             if path.starts_with(project_path) {
-                return Some(override_config);
+                return Some((project_path.to_string(), override_config));
             }
         }
 
@@ -378,9 +475,9 @@ mod tests {
     #[test]
     fn test_mcp_config_entry_to_mcp_config() {
         let entry = McpConfigEntry {
-            transport: "stdio".to_string(),
+            transport: Some("stdio".to_string()),
             source: "registry:postgres-mcp".to_string(),
-            runtime: "docker".to_string(),
+            runtime: Some("docker".to_string()),
             args: vec!["--readonly".to_string()],
             url: None,
             headers: HashMap::new(),
@@ -391,9 +488,13 @@ mod tests {
                 map.insert("DB_URL".to_string(), "postgres://localhost".to_string());
                 map
             },
+            reset_targets: false,
+            reset_ignore_targets: false,
+            reset_env: None,
+            reset_env_all: false,
         };
 
-        let config: crate::mcp::McpConfig = entry.into();
+        let config: crate::mcp::McpConfig = entry.try_into().unwrap();
         assert_eq!(config.source, "registry:postgres-mcp");
         assert_eq!(config.runtime, crate::mcp::RuntimeType::Docker);
         assert_eq!(config.args, vec!["--readonly".to_string()]);
@@ -404,12 +505,13 @@ mod tests {
     fn test_skill_config_entry_to_skill_config() {
         let entry = SkillConfigEntry {
             source: "registry:anthropic/pdf".to_string(),
-            version: "^1.0".to_string(),
+            version: Some("^1.0".to_string()),
             targets: Some(vec!["claude-code".to_string()]),
             ignore_targets: None,
+            reset_version: false,
         };
 
-        let config: crate::skills::SkillConfig = entry.into();
+        let config: crate::skills::SkillConfig = entry.try_into().unwrap();
         assert_eq!(config.source, "registry:anthropic/pdf");
         assert_eq!(config.version, "^1.0");
         assert!(config.targets.is_some());
@@ -429,9 +531,25 @@ mod tests {
 
         let found = config.get_project_override(&std::path::PathBuf::from("/Users/test/project"));
         assert!(found.is_some());
+        assert_eq!(found.unwrap().0, "/Users/test/project");
 
         let not_found = config.get_project_override(&std::path::PathBuf::from("/other/path"));
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_project_override_deterministic_longest_match() {
+        let mut config = SiftConfig::new();
+        config
+            .projects
+            .insert("/Users/me".to_string(), ProjectOverride::default());
+        config
+            .projects
+            .insert("/Users/me/repos".to_string(), ProjectOverride::default());
+
+        let result = config.get_project_override(std::path::Path::new("/Users/me/repos/project"));
+        // Should ALWAYS return the longer match key, regardless of HashMap order
+        assert_eq!(result.unwrap().0, "/Users/me/repos");
     }
 
     #[test]
@@ -445,7 +563,7 @@ mod tests {
             },
         };
 
-        let override_config = entry.to_override();
+        let override_config = entry.to_override().unwrap();
         assert_eq!(
             override_config.runtime,
             Some(crate::mcp::RuntimeType::Docker)
@@ -460,15 +578,19 @@ mod tests {
         config.mcp.insert(
             "test-mcp".to_string(),
             McpConfigEntry {
-                transport: "stdio".to_string(),
+                transport: Some("stdio".to_string()),
                 source: "registry:test".to_string(),
-                runtime: "node".to_string(),
+                runtime: Some("node".to_string()),
                 args: vec![],
                 url: None,
                 headers: HashMap::new(),
                 targets: None,
                 ignore_targets: None,
                 env: HashMap::new(),
+                reset_targets: false,
+                reset_ignore_targets: false,
+                reset_env: None,
+                reset_env_all: false,
             },
         );
 
@@ -482,18 +604,49 @@ mod tests {
         config.mcp.insert(
             "test-mcp".to_string(),
             McpConfigEntry {
-                transport: "stdio".to_string(),
+                transport: Some("stdio".to_string()),
                 source: "invalid:source".to_string(),
-                runtime: "node".to_string(),
+                runtime: Some("node".to_string()),
                 args: vec![],
                 url: None,
                 headers: HashMap::new(),
                 targets: Some(vec!["target".to_string()]),
                 ignore_targets: Some(vec!["ignore".to_string()]), // Both set - should fail
                 env: HashMap::new(),
+                reset_targets: false,
+                reset_ignore_targets: false,
+                reset_env: None,
+                reset_env_all: false,
             },
         );
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_project_override_runtime() {
+        let mut config = SiftConfig::new();
+
+        let mut override_config = ProjectOverride::default();
+        override_config.mcp.insert(
+            "test-mcp".to_string(),
+            McpOverrideEntry {
+                runtime: Some("doker".to_string()),
+                env: HashMap::new(),
+            },
+        );
+
+        config
+            .projects
+            .insert("/Users/test/project".to_string(), override_config);
+
+        let err = config
+            .validate()
+            .expect_err("validate() must fail for invalid project override runtime")
+            .to_string();
+        assert!(
+            err.contains("Invalid runtime") || err.contains("doker"),
+            "unexpected error: {err}"
+        );
     }
 }

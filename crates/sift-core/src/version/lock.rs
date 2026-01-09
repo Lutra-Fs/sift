@@ -231,6 +231,7 @@ impl VersionResolver {
         }
 
         if input.starts_with("branch:") {
+            // Safe: unwrap is guaranteed by the starts_with("branch:") guard above
             return Ok(VersionConstraint::Branch(
                 input.strip_prefix("branch:").unwrap().to_string(),
             ));

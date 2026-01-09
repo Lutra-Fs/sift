@@ -3,13 +3,13 @@
 //! Ratatui-based terminal interface for managing MCP servers and skills.
 
 use ratatui::{
+    Frame, Terminal,
     crossterm::{
         event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
         execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
     widgets::{Block, Paragraph},
-    Frame, Terminal,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -49,14 +49,16 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_tui(terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>) -> anyhow::Result<()> {
+fn run_tui(
+    terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+) -> anyhow::Result<()> {
     loop {
-        terminal.draw(|f| ui(f))?;
+        terminal.draw(ui)?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.code == KeyCode::Char('q') {
-                return Ok(());
-            }
+        if let Event::Key(key) = event::read()?
+            && key.code == KeyCode::Char('q')
+        {
+            return Ok(());
         }
     }
 }

@@ -55,16 +55,14 @@ pub fn deliver_dir_managed(
     // Cache integrity check (prevents pollution detection bypass)
     let cache_hash = hash_tree(src_dir)
         .with_context(|| format!("Failed to hash cache: {}", src_dir.display()))?;
-    if cache_hash != expected_tree_hash {
-        if !options.force {
-            anyhow::bail!(
-                "Cache is dirty: expected hash {}, got {}. Use force to proceed.",
-                expected_tree_hash,
-                cache_hash
-            );
-        }
-        // Force: proceed despite dirty cache
+    if cache_hash != expected_tree_hash && !options.force {
+        anyhow::bail!(
+            "Cache is dirty: expected hash {}, got {}. Use force to proceed.",
+            expected_tree_hash,
+            cache_hash
+        );
     }
+    // Force: proceed despite dirty cache
 
     // Managed判定 based on lockfile record
     if dst_dir.exists() {
@@ -230,13 +228,13 @@ fn deliver_symlink(
     dst_dir: &Path,
     options: &LinkerOptions,
 ) -> anyhow::Result<LinkReport> {
-    if let Ok(target) = fs::read_link(dst_dir) {
-        if same_path(&target, src_dir) {
-            return Ok(LinkReport {
-                mode: LinkMode::Symlink,
-                changed: false,
-            });
-        }
+    if let Ok(target) = fs::read_link(dst_dir)
+        && same_path(&target, src_dir)
+    {
+        return Ok(LinkReport {
+            mode: LinkMode::Symlink,
+            changed: false,
+        });
     }
 
     let tmp = unique_temp_path(dst_dir)?;
@@ -367,10 +365,10 @@ fn hardlink_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
         } else if ty.is_file() {
             fs::hard_link(&from, &to)?;
         } else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Unsupported filesystem entry type at {}", from.display()),
-            ));
+            return Err(std::io::Error::other(format!(
+                "Unsupported filesystem entry type at {}",
+                from.display()
+            )));
         }
     }
     Ok(())
@@ -379,10 +377,10 @@ fn hardlink_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
 fn is_cross_device_link_error(err: &anyhow::Error) -> bool {
     let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err.as_ref());
     while let Some(e) = cur {
-        if let Some(ioe) = e.downcast_ref::<std::io::Error>() {
-            if is_cross_device_os_error(ioe) {
-                return true;
-            }
+        if let Some(ioe) = e.downcast_ref::<std::io::Error>()
+            && is_cross_device_os_error(ioe)
+        {
+            return true;
         }
         cur = e.source();
     }

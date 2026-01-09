@@ -258,18 +258,21 @@ impl MarketplaceAdapter {
     }
 
     /// Get the source string from a marketplace plugin
-    pub fn get_source_string(plugin: &MarketplacePlugin) -> String {
+    pub fn get_source_string(plugin: &MarketplacePlugin) -> anyhow::Result<String> {
         match &plugin.source {
             MarketplaceSource::String(s) => {
                 if s.starts_with("./") || s.starts_with("../") {
-                    format!("local:{}", s)
+                    Ok(format!("local:{}", s))
                 } else {
-                    s.clone()
+                    Ok(s.clone())
                 }
             }
             MarketplaceSource::Object(obj) => match obj.source {
                 SourceType::Github => {
-                    let repo = obj.repo.as_ref().expect("GitHub source requires 'repo'");
+                    let repo = obj
+                        .repo
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("GitHub source requires 'repo' field"))?;
                     let ref_part = obj
                         .ref_
                         .as_ref()
@@ -280,30 +283,35 @@ impl MarketplaceAdapter {
                         .as_ref()
                         .map(|p| format!("/{}", p))
                         .unwrap_or_default();
-                    format!("github:{}{}{}", repo, ref_part, path_part)
+                    Ok(format!("github:{}{}{}", repo, ref_part, path_part))
                 }
                 SourceType::Url => {
-                    let url = obj.url.as_ref().expect("URL source requires 'url'");
-                    url.to_string()
+                    let url = obj
+                        .url
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("URL source requires 'url' field"))?;
+                    Ok(url.to_string())
                 }
                 SourceType::Local => {
                     let path = obj.path.as_deref().unwrap_or(".");
-                    format!("local:{}", path)
+                    Ok(format!("local:{}", path))
                 }
             },
         }
     }
 
     /// List all available plugins from a marketplace
-    pub fn list_plugins(manifest: &MarketplaceManifest) -> Vec<PluginSummary> {
+    pub fn list_plugins(manifest: &MarketplaceManifest) -> anyhow::Result<Vec<PluginSummary>> {
         manifest
             .plugins
             .iter()
-            .map(|plugin| PluginSummary {
-                name: plugin.name.clone(),
-                description: plugin.description.clone(),
-                version: plugin.version.clone(),
-                source: Self::get_source_string(plugin),
+            .map(|plugin| {
+                Ok(PluginSummary {
+                    name: plugin.name.clone(),
+                    description: plugin.description.clone(),
+                    version: plugin.version.clone(),
+                    source: Self::get_source_string(plugin)?,
+                })
             })
             .collect()
     }
@@ -320,7 +328,7 @@ impl MarketplaceAdapter {
     pub fn plugin_to_skill_config(
         plugin: &MarketplacePlugin,
     ) -> anyhow::Result<crate::skills::SkillConfig> {
-        let source = Self::get_source_string(plugin);
+        let source = Self::get_source_string(plugin)?;
 
         Ok(crate::skills::SkillConfig {
             source,
@@ -337,7 +345,7 @@ impl MarketplaceAdapter {
         plugin: &MarketplacePlugin,
     ) -> anyhow::Result<Vec<crate::skills::SkillConfig>> {
         let mut configs = Vec::new();
-        let base_source = Self::get_source_string(plugin);
+        let base_source = Self::get_source_string(plugin)?;
 
         // Try skills field first (new format)
         if let Some(skills) = &plugin.skills {
@@ -513,7 +521,7 @@ impl MarketplaceAdapter {
                     })
                     .unwrap_or_default();
 
-                let source = Self::get_source_string(plugin);
+                let source = Self::get_source_string(plugin)?;
                 let runtime = Self::infer_runtime_from_command(command);
 
                 return Ok(crate::mcp::McpConfig {
@@ -607,7 +615,7 @@ mod tests {
             strict: None,
         };
 
-        let source = MarketplaceAdapter::get_source_string(&plugin);
+        let source = MarketplaceAdapter::get_source_string(&plugin).unwrap();
         assert_eq!(source, "local:./plugins/test");
     }
 
@@ -638,7 +646,7 @@ mod tests {
             strict: None,
         };
 
-        let source = MarketplaceAdapter::get_source_string(&plugin);
+        let source = MarketplaceAdapter::get_source_string(&plugin).unwrap();
         assert_eq!(source, "github:owner/repo@v1.0.0");
     }
 
@@ -666,7 +674,7 @@ mod tests {
         }"#;
 
         let manifest = MarketplaceAdapter::parse(json).unwrap();
-        let plugins = MarketplaceAdapter::list_plugins(&manifest);
+        let plugins = MarketplaceAdapter::list_plugins(&manifest).unwrap();
 
         assert_eq!(plugins.len(), 2);
         assert_eq!(plugins[0].name, "plugin1");
@@ -776,11 +784,11 @@ mod tests {
         assert_eq!(plugin2.category.as_ref().unwrap(), "productivity");
 
         // Test source string conversion
-        let source1 = MarketplaceAdapter::get_source_string(plugin1);
+        let source1 = MarketplaceAdapter::get_source_string(plugin1).unwrap();
         assert_eq!(source1, "local:./plugins/agent-sdk-dev");
 
         // Test plugin listing
-        let plugins = MarketplaceAdapter::list_plugins(&manifest);
+        let plugins = MarketplaceAdapter::list_plugins(&manifest).unwrap();
         assert_eq!(plugins.len(), 2);
         assert_eq!(plugins[0].name, "agent-sdk-dev");
         assert_eq!(plugins[1].name, "commit-commands");

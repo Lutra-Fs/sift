@@ -1,19 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 /// How Sift should materialize a cached directory into a target directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LinkMode {
+    #[default]
     Auto,
     Hardlink,
     Copy,
     Symlink,
-}
-
-impl Default for LinkMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl LinkMode {

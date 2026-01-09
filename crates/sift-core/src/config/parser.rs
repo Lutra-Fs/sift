@@ -169,9 +169,9 @@ ignore_targets = ["vscode"]
         original.mcp.insert(
             "postgres".to_string(),
             crate::config::schema::McpConfigEntry {
-                transport: "stdio".to_string(),
+                transport: Some("stdio".to_string()),
                 source: "registry:postgres-mcp".to_string(),
-                runtime: "docker".to_string(),
+                runtime: Some("docker".to_string()),
                 args: vec!["--readonly".to_string()],
                 url: None,
                 headers: HashMap::new(),
@@ -182,6 +182,10 @@ ignore_targets = ["vscode"]
                     map.insert("DB_URL".to_string(), "postgres://localhost".to_string());
                     map
                 },
+                reset_targets: false,
+                reset_ignore_targets: false,
+                reset_env: None,
+                reset_env_all: false,
             },
         );
 
@@ -189,9 +193,10 @@ ignore_targets = ["vscode"]
             "pdf".to_string(),
             crate::config::schema::SkillConfigEntry {
                 source: "registry:anthropic/pdf".to_string(),
-                version: "^1.0".to_string(),
+                version: Some("^1.0".to_string()),
                 targets: Some(vec!["claude-code".to_string()]),
                 ignore_targets: None,
+                reset_version: false,
             },
         );
 

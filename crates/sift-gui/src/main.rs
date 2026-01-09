@@ -16,7 +16,11 @@ fn main() -> iced::Result {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    iced::run("Sift - MCP & Skills Manager", SiftGui::update, SiftGui::view)
+    iced::run(
+        "Sift - MCP & Skills Manager",
+        SiftGui::update,
+        SiftGui::view,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -24,16 +28,9 @@ enum Message {
     InputChanged(String),
 }
 
+#[derive(Default)]
 struct SiftGui {
     input_value: String,
-}
-
-impl Default for SiftGui {
-    fn default() -> Self {
-        Self {
-            input_value: String::new(),
-        }
-    }
 }
 
 impl SiftGui {
@@ -50,8 +47,7 @@ impl SiftGui {
         column![
             text("Sift - MCP & Skills Manager").size(24),
             text("GUI interface coming soon").size(14),
-            text_input("Type something...", &self.input_value)
-                .on_input(Message::InputChanged),
+            text_input("Type something...", &self.input_value).on_input(Message::InputChanged),
         ]
         .padding(20)
         .spacing(10)

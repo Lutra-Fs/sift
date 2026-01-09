@@ -69,7 +69,7 @@ fn hash_dir_recursive(hasher: &mut blake3::Hasher, dir: &Path, base: &str) -> an
             // Hash file: path || 0x00 || content
             hasher.update(rel_path.as_bytes());
             hasher.update(&[0x00]); // Path separator
-            let content = fs::read(&entry.path())
+            let content = fs::read(entry.path())
                 .with_context(|| format!("Failed to read file: {}", entry.path().display()))?;
             hasher.update(&content);
         } else if ty.is_symlink() {
