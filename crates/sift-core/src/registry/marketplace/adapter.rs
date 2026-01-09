@@ -62,14 +62,9 @@ pub struct MarketplacePlugin {
     /// Source information
     pub source: MarketplaceSource,
 
-    /// NEW: Skills array (replaces commands field)
+    /// Skills array
     #[serde(default)]
     pub skills: Option<SkillsOrPaths>,
-
-    /// DEPRECATED: Commands field (use `skills` instead)
-    /// Kept for backward compatibility via serde alias
-    #[serde(default, alias = "commands")]
-    pub commands_legacy: Option<CommandsOrPaths>,
 
     /// Strict mode flag (from anthropics/skills format)
     #[serde(default)]
@@ -149,15 +144,6 @@ pub enum SourceType {
     Github,
     Url,
     Local,
-}
-
-/// Commands can be a string, array, or object
-/// DEPRECATED: Use `skills` field instead (kept for backward compatibility)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum CommandsOrPaths {
-    Single(String),
-    Multiple(Vec<String>),
 }
 
 /// Skills can be a string, array, or object
@@ -339,8 +325,7 @@ impl MarketplaceAdapter {
     }
 
     /// Convert a marketplace plugin to multiple Sift skill configs
-    /// Returns one SkillConfig per path in the skills array (new format)
-    /// Falls back to commands_legacy for backward compatibility
+    /// Returns one SkillConfig per path in the skills array
     pub fn plugin_to_skill_configs(
         plugin: &MarketplacePlugin,
     ) -> anyhow::Result<Vec<crate::skills::SkillConfig>> {
@@ -362,22 +347,7 @@ impl MarketplaceAdapter {
             return Ok(configs);
         }
 
-        // Fallback to commands_legacy (old format with alias)
-        if let Some(commands) = &plugin.commands_legacy {
-            match commands {
-                CommandsOrPaths::Single(path) => {
-                    configs.push(Self::create_skill_config(&base_source, plugin, path)?);
-                }
-                CommandsOrPaths::Multiple(paths) => {
-                    for path in paths {
-                        configs.push(Self::create_skill_config(&base_source, plugin, path)?);
-                    }
-                }
-            }
-            return Ok(configs);
-        }
-
-        // No skills or commands - create single config from plugin source
+        // No skills - create single config from plugin source
         configs.push(crate::skills::SkillConfig {
             source: base_source,
             version: plugin.version.clone(),
@@ -601,7 +571,6 @@ mod tests {
             description: "Test".to_string(),
             version: "1.0.0".to_string(),
             source: MarketplaceSource::String("./plugins/test".to_string()),
-            commands_legacy: None,
             hooks: None,
             mcp_servers: None,
             author: None,
@@ -632,7 +601,6 @@ mod tests {
                 ref_: Some("v1.0.0".to_string()),
                 path: None,
             }),
-            commands_legacy: None,
             hooks: None,
             mcp_servers: None,
             author: None,
@@ -715,7 +683,6 @@ mod tests {
             description: "Test plugin".to_string(),
             version: "2.1.0".to_string(),
             source: MarketplaceSource::String("registry:anthropic/pdf".to_string()),
-            commands_legacy: None,
             hooks: None,
             mcp_servers: None,
             author: None,
@@ -984,7 +951,6 @@ mod tests {
                 "./skills/xlsx".to_string(),
                 "./skills/docx".to_string(),
             ])),
-            commands_legacy: None,
             hooks: None,
             mcp_servers: None,
             author: None,
@@ -1014,7 +980,6 @@ mod tests {
             mcp_servers: Some(serde_json::json!({
                 "http-server": "https://example.com/mcp"
             })),
-            commands_legacy: None,
             skills: None,
             hooks: None,
             author: None,
@@ -1034,26 +999,6 @@ mod tests {
             configs[0].1.url,
             Some("https://example.com/mcp".to_string())
         );
-    }
-
-    #[test]
-    fn test_backward_compatibility_commands_alias() {
-        // Test that "commands" field maps to commands_legacy via alias
-        let json = r#"{
-            "name": "old-marketplace",
-            "owner": {"name": "Test"},
-            "plugins": [{
-                "name": "test",
-                "description": "Test",
-                "version": "1.0.0",
-                "source": "./test",
-                "commands": ["./cmd1", "./cmd2"]
-            }]
-        }"#;
-
-        let manifest = MarketplaceAdapter::parse(json).unwrap();
-        let configs = MarketplaceAdapter::plugin_to_skill_configs(&manifest.plugins[0]).unwrap();
-        assert_eq!(configs.len(), 2);
     }
 
     #[test]

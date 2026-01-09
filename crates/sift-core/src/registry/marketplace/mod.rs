@@ -8,9 +8,9 @@ pub mod merge_nested;
 
 // Re-export public API from adapter module
 pub use adapter::{
-    CommandsOrPaths, MarketplaceAdapter, MarketplaceInfo, MarketplaceManifest, MarketplaceOwner,
-    MarketplacePlugin, MarketplaceSource, MarketplaceSourceObject, Metadata,
-    RawMarketplaceManifest, SkillsOrPaths, SourceType,
+    MarketplaceAdapter, MarketplaceInfo, MarketplaceManifest, MarketplaceOwner, MarketplacePlugin,
+    MarketplaceSource, MarketplaceSourceObject, Metadata, RawMarketplaceManifest, SkillsOrPaths,
+    SourceType,
 };
 
 pub use github_fetcher::GitHubFetcher;
