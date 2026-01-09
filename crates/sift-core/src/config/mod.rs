@@ -5,20 +5,29 @@
 //! - PerProjectLocal: Project-specific, not shared
 //! - PerProjectShared: Project-specific, shared across team
 
+pub mod managed_json;
 pub mod merge;
+pub mod ownership;
+pub mod ownership_store;
 pub mod parser;
+pub mod paths;
 pub mod schema;
+pub mod store;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // Re-export the new module types
+pub use managed_json::ManagedJsonResult;
 pub use merge::merge_configs;
+pub use ownership_store::OwnershipStore;
 pub use parser::{parse_sift_toml, parse_sift_toml_str, to_toml};
+pub use paths::config_path_for_scope;
 pub use schema::{
     ClientConfigEntry, McpConfigEntry, McpOverrideEntry, ProjectOverride, SiftConfig,
     SkillConfigEntry, SkillOverrideEntry,
 };
+pub use store::ConfigStore;
 
 /// Configuration scope levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,35 +44,28 @@ pub enum ConfigScope {
 #[derive(Debug, Clone)]
 pub struct ConfigManager {
     scope: ConfigScope,
-    config_dir: PathBuf,
+    config_path: PathBuf,
 }
 
 impl ConfigManager {
     /// Create a new config manager for the given scope
     pub fn new(scope: ConfigScope) -> anyhow::Result<Self> {
-        let config_dir = Self::resolve_config_dir(scope)?;
-        Ok(Self { scope, config_dir })
+        let config_path = Self::resolve_config_path(scope)?;
+        Ok(Self { scope, config_path })
     }
 
-    /// Resolve the configuration directory for the given scope
-    fn resolve_config_dir(scope: ConfigScope) -> anyhow::Result<PathBuf> {
-        match scope {
-            ConfigScope::Global => {
-                let base = dirs::config_dir()
-                    .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
-                Ok(base.join("sift"))
-            }
-            ConfigScope::PerProjectLocal => {
-                // Detect project root via .git
-                let cwd = std::env::current_dir()?;
-                Ok(cwd.join(".sift"))
-            }
-            ConfigScope::PerProjectShared => {
-                // Detect project root via .git, use shared location
-                let cwd = std::env::current_dir()?;
-                Ok(cwd.join("sift.shared"))
-            }
-        }
+    /// Resolve the configuration path for the given scope
+    fn resolve_config_path(scope: ConfigScope) -> anyhow::Result<PathBuf> {
+        let global_dir = dirs::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
+            .join("sift");
+        let project_root = std::env::current_dir()?;
+
+        Ok(paths::config_path_for_scope(
+            scope,
+            &global_dir,
+            &project_root,
+        ))
     }
 
     /// Get the current scope
@@ -72,7 +74,7 @@ impl ConfigManager {
     }
 
     /// Get the configuration directory
-    pub fn config_dir(&self) -> &PathBuf {
-        &self.config_dir
+    pub fn config_path(&self) -> &PathBuf {
+        &self.config_path
     }
 }

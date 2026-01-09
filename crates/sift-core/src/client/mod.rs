@@ -1,30 +1,16 @@
-//! Client adapter layer for cross-client compatibility
+//! Client abstraction layer.
 //!
-//! Provides abstraction for different AI client configurations with support for:
-//! - Built-in clients (Claude Code, Claude Desktop, VS Code, etc.)
-//! - Dynamic registration through external providers
-//! - Extensible capabilities interface
+//! Client implementations live in submodules under this directory.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashSet;
+use std::path::PathBuf;
 
-use crate::fs::LinkMode;
+use crate::config::ConfigScope;
+use crate::mcp::spec::McpResolvedServer;
 
-/// Built-in client types
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ClientType {
-    /// Claude Code CLI
-    ClaudeCode,
-    /// Claude Desktop
-    ClaudeDesktop,
-    /// Visual Studio Code
-    VSCode,
-    /// Gemini CLI
-    GeminiCli,
-    /// Codex
-    Codex,
-}
+pub mod claude_code;
 
 /// Client configuration from sift.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,13 +23,24 @@ pub struct ClientConfig {
     #[serde(default)]
     pub source: Option<String>,
 
-    /// How Sift should materialize skills into the client's expected location
-    #[serde(default)]
-    pub link_mode: LinkMode,
-
-    /// Capabilities (auto-detected for built-in clients)
+    /// Capabilities (optional, provided by client implementations)
     #[serde(default)]
     pub capabilities: Option<ClientCapabilities>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientContext {
+    pub home_dir: PathBuf,
+    pub project_root: PathBuf,
+}
+
+impl ClientContext {
+    pub fn new(home_dir: PathBuf, project_root: PathBuf) -> Self {
+        Self {
+            home_dir,
+            project_root,
+        }
+    }
 }
 
 fn default_enabled() -> bool {
@@ -57,7 +54,6 @@ impl ClientConfig {
         if other.source.is_some() {
             self.source = other.source;
         }
-        self.link_mode = other.link_mode;
         if other.capabilities.is_some() {
             self.capabilities = other.capabilities;
         }
@@ -73,136 +69,18 @@ impl ClientConfig {
         }
         Ok(())
     }
-
-    /// Get the default configuration for a built-in client
-    pub fn for_client_type(client_type: ClientType) -> Self {
-        match client_type {
-            ClientType::ClaudeCode => ClientConfig::claude_code(),
-            ClientType::ClaudeDesktop => ClientConfig::claude_desktop(),
-            ClientType::VSCode => ClientConfig::vscode(),
-            ClientType::GeminiCli => ClientConfig {
-                enabled: true,
-                source: None,
-                link_mode: LinkMode::Auto,
-                capabilities: Some(ClientCapabilities {
-                    supports_global: true,
-                    supports_project: true,
-                    supports_symlinked_skills: true,
-                    skill_delivery: SkillDeliveryMode::Filesystem {
-                        global_path: "~/.gemini/skills".to_string(),
-                        project_path: Some("./.gemini/skills".to_string()),
-                    },
-                    mcp_config_format: McpConfigFormat::Generic,
-                    supported_transports: {
-                        let mut set = HashSet::new();
-                        set.insert("stdio".to_string());
-                        set
-                    },
-                }),
-            },
-            ClientType::Codex => ClientConfig {
-                enabled: true,
-                source: None,
-                link_mode: LinkMode::Auto,
-                capabilities: Some(ClientCapabilities {
-                    supports_global: true,
-                    supports_project: true,
-                    supports_symlinked_skills: true,
-                    skill_delivery: SkillDeliveryMode::Filesystem {
-                        global_path: "~/.codex/skills".to_string(),
-                        project_path: Some("./.codex/skills".to_string()),
-                    },
-                    mcp_config_format: McpConfigFormat::Generic,
-                    supported_transports: {
-                        let mut set = HashSet::new();
-                        set.insert("stdio".to_string());
-                        set
-                    },
-                }),
-            },
-        }
-    }
-
-    /// Get the default configuration for Claude Desktop
-    pub fn claude_desktop() -> Self {
-        ClientConfig {
-            enabled: true,
-            source: None,
-            link_mode: LinkMode::Auto,
-            capabilities: Some(ClientCapabilities {
-                supports_global: true,
-                supports_project: false,
-                supports_symlinked_skills: true,
-                skill_delivery: SkillDeliveryMode::Filesystem {
-                    global_path: "~/.claude/skills".to_string(),
-                    project_path: None,
-                },
-                mcp_config_format: McpConfigFormat::ClaudeDesktop,
-                supported_transports: {
-                    let mut set = HashSet::new();
-                    set.insert("stdio".to_string());
-                    set
-                },
-            }),
-        }
-    }
-
-    /// Get the default configuration for Claude Code
-    pub fn claude_code() -> Self {
-        ClientConfig {
-            enabled: true,
-            source: None,
-            link_mode: LinkMode::Auto,
-            capabilities: Some(ClientCapabilities {
-                supports_global: true,
-                supports_project: true,
-                supports_symlinked_skills: true,
-                skill_delivery: SkillDeliveryMode::Filesystem {
-                    global_path: "~/.claude/skills".to_string(),
-                    project_path: Some("./.claude/skills".to_string()),
-                },
-                mcp_config_format: McpConfigFormat::ClaudeCode,
-                supported_transports: {
-                    let mut set = HashSet::new();
-                    set.insert("stdio".to_string());
-                    set.insert("http".to_string());
-                    set
-                },
-            }),
-        }
-    }
-
-    /// Get the default configuration for VS Code
-    pub fn vscode() -> Self {
-        ClientConfig {
-            enabled: true,
-            source: None,
-            link_mode: LinkMode::Auto,
-            capabilities: Some(ClientCapabilities {
-                supports_global: true,
-                supports_project: true,
-                supports_symlinked_skills: false,
-                skill_delivery: SkillDeliveryMode::ConfigReference,
-                mcp_config_format: McpConfigFormat::Generic,
-                supported_transports: {
-                    let mut set = HashSet::new();
-                    set.insert("stdio".to_string());
-                    set
-                },
-            }),
-        }
-    }
 }
 
 /// Client capabilities interface
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientCapabilities {
-    /// Scope support
+    /// Scope support for MCP servers
     #[serde(default)]
-    pub supports_global: bool,
+    pub mcp: ScopeSupport,
 
+    /// Scope support for skills
     #[serde(default)]
-    pub supports_project: bool,
+    pub skills: ScopeSupport,
 
     /// Whether the client will recognize skills delivered as symlinked directories
     #[serde(default)]
@@ -221,26 +99,7 @@ pub struct ClientCapabilities {
 }
 
 fn default_mcp_config_format() -> McpConfigFormat {
-    McpConfigFormat::ClaudeDesktop
-}
-
-impl ClientCapabilities {
-    /// Validate capabilities for consistency
-    pub fn validate(&self) -> anyhow::Result<()> {
-        if !self.supports_global && !self.supports_project {
-            anyhow::bail!("Client must support at least one scope (global or project)");
-        }
-        Ok(())
-    }
-
-    /// Check if the client supports a given scope
-    pub fn supports_scope(&self, scope: crate::config::ConfigScope) -> bool {
-        match scope {
-            crate::config::ConfigScope::Global => self.supports_global,
-            crate::config::ConfigScope::PerProjectLocal
-            | crate::config::ConfigScope::PerProjectShared => self.supports_project,
-        }
-    }
+    McpConfigFormat::Generic
 }
 
 /// How skills are delivered to the client
@@ -271,186 +130,56 @@ pub enum McpConfigFormat {
     Generic,
 }
 
-/// Trait for client-specific configuration adapters
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathRoot {
+    User,
+    Project,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedJsonPlan {
+    pub root: PathRoot,
+    pub relative_path: PathBuf,
+    pub json_path: Vec<String>,
+    pub entries: Map<String, Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillDeliveryPlan {
+    pub root: PathRoot,
+    pub relative_path: PathBuf,
+    pub use_git_exclude: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ScopeSupport {
+    #[serde(default)]
+    pub global: bool,
+    #[serde(default)]
+    pub project: bool,
+    #[serde(default)]
+    pub local: bool,
+}
+
+pub trait Client: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn capabilities(&self) -> ClientCapabilities;
+}
+
 pub trait ClientAdapter: Send + Sync {
-    /// Get the client type identifier
-    fn client_type(&self) -> ClientType;
+    fn id(&self) -> &'static str;
+    fn capabilities(&self) -> ClientCapabilities;
 
-    /// Get the configuration path for this client
-    fn config_path(&self) -> anyhow::Result<std::path::PathBuf>;
+    fn plan_mcp(
+        &self,
+        ctx: &ClientContext,
+        scope: ConfigScope,
+        servers: &[McpResolvedServer],
+    ) -> anyhow::Result<ManagedJsonPlan>;
 
-    /// Read configuration for this client
-    fn read_config(&self) -> anyhow::Result<serde_json::Value>;
-
-    /// Write configuration for this client
-    fn write_config(&self, config: &serde_json::Value) -> anyhow::Result<()>;
-}
-
-/// Claude Code client adapter
-#[derive(Debug)]
-pub struct ClaudeCodeAdapter;
-
-impl ClientAdapter for ClaudeCodeAdapter {
-    fn client_type(&self) -> ClientType {
-        ClientType::ClaudeCode
-    }
-
-    fn config_path(&self) -> anyhow::Result<std::path::PathBuf> {
-        let base = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
-        Ok(base.join("claude-code"))
-    }
-
-    fn read_config(&self) -> anyhow::Result<serde_json::Value> {
-        Ok(serde_json::json!({}))
-    }
-
-    fn write_config(&self, _config: &serde_json::Value) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-/// Claude Desktop client adapter
-#[derive(Debug)]
-pub struct ClaudeDesktopAdapter;
-
-impl ClientAdapter for ClaudeDesktopAdapter {
-    fn client_type(&self) -> ClientType {
-        ClientType::ClaudeDesktop
-    }
-
-    fn config_path(&self) -> anyhow::Result<std::path::PathBuf> {
-        let base = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
-        Ok(base.join("Claude"))
-    }
-
-    fn read_config(&self) -> anyhow::Result<serde_json::Value> {
-        Ok(serde_json::json!({}))
-    }
-
-    fn write_config(&self, _config: &serde_json::Value) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-/// Get the adapter for a given client type
-pub fn get_adapter(client_type: ClientType) -> Box<dyn ClientAdapter> {
-    match client_type {
-        ClientType::ClaudeCode => Box::new(ClaudeCodeAdapter),
-        ClientType::ClaudeDesktop => Box::new(ClaudeDesktopAdapter),
-        ClientType::VSCode => unimplemented!("VS Code adapter not yet implemented"),
-        ClientType::GeminiCli => unimplemented!("Gemini CLI adapter not yet implemented"),
-        ClientType::Codex => unimplemented!("Codex adapter not yet implemented"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_client_config_claude_code() {
-        let config = ClientConfig::claude_code();
-        assert!(config.enabled);
-        assert!(config.capabilities.is_some());
-    }
-
-    #[test]
-    fn test_client_config_claude_desktop() {
-        let config = ClientConfig::claude_desktop();
-        assert!(config.enabled);
-        assert!(config.capabilities.is_some());
-    }
-
-    #[test]
-    fn test_client_config_vscode() {
-        let config = ClientConfig::vscode();
-        assert!(config.enabled);
-        assert!(config.capabilities.is_some());
-    }
-
-    #[test]
-    fn test_client_config_merge() {
-        let mut base = ClientConfig {
-            enabled: true,
-            source: Some("registry:base".to_string()),
-            link_mode: LinkMode::Auto,
-            capabilities: None,
-        };
-
-        let overlay = ClientConfig {
-            enabled: false,
-            source: Some("registry:overlay".to_string()),
-            link_mode: LinkMode::Symlink,
-            capabilities: None,
-        };
-
-        base.merge(overlay);
-
-        assert!(!base.enabled);
-        assert_eq!(base.source, Some("registry:overlay".to_string()));
-        assert_eq!(base.link_mode, LinkMode::Symlink);
-    }
-
-    #[test]
-    fn test_client_config_validate_valid() {
-        let config = ClientConfig {
-            enabled: true,
-            source: Some("registry:custom-provider".to_string()),
-            link_mode: LinkMode::Auto,
-            capabilities: None,
-        };
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_client_config_validate_invalid() {
-        let config = ClientConfig {
-            enabled: true,
-            source: Some("invalid:source".to_string()),
-            link_mode: LinkMode::Auto,
-            capabilities: None,
-        };
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn test_client_capabilities_validate_no_scope() {
-        let caps = ClientCapabilities {
-            supports_global: false,
-            supports_project: false,
-            supports_symlinked_skills: false,
-            skill_delivery: SkillDeliveryMode::None,
-            mcp_config_format: McpConfigFormat::Generic,
-            supported_transports: HashSet::new(),
-        };
-        assert!(caps.validate().is_err());
-    }
-
-    #[test]
-    fn test_client_capabilities_validate_with_scope() {
-        let caps = ClientCapabilities {
-            supports_global: true,
-            supports_project: false,
-            supports_symlinked_skills: false,
-            skill_delivery: SkillDeliveryMode::None,
-            mcp_config_format: McpConfigFormat::Generic,
-            supported_transports: HashSet::new(),
-        };
-        assert!(caps.validate().is_ok());
-    }
-
-    #[test]
-    fn test_client_type_serialization() {
-        // Test that ClientType serializes as kebab-case
-        let code = ClientType::ClaudeCode;
-        let json = serde_json::to_string(&code).expect("ClientType serialization should succeed");
-        assert_eq!(json, "\"claude-code\"");
-
-        let desktop = ClientType::ClaudeDesktop;
-        let json =
-            serde_json::to_string(&desktop).expect("ClientType serialization should succeed");
-        assert_eq!(json, "\"claude-desktop\"");
-    }
+    fn plan_skill(
+        &self,
+        ctx: &ClientContext,
+        scope: ConfigScope,
+    ) -> anyhow::Result<SkillDeliveryPlan>;
 }

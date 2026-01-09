@@ -21,6 +21,10 @@ pub struct SiftConfig {
     #[serde(default)]
     pub skill: HashMap<String, SkillConfigEntry>,
 
+    /// Global install link mode
+    #[serde(default)]
+    pub link_mode: Option<crate::fs::LinkMode>,
+
     /// Client configurations (valid in all scopes)
     #[serde(default)]
     pub clients: HashMap<String, ClientConfigEntry>,
@@ -165,10 +169,6 @@ pub struct ClientConfigEntry {
     #[serde(default)]
     pub source: Option<String>,
 
-    /// How Sift should materialize skills into the client's expected location
-    #[serde(default)]
-    pub link_mode: Option<crate::fs::LinkMode>,
-
     /// Capabilities (optional, auto-detected for built-in clients)
     #[serde(default)]
     pub capabilities: Option<serde_json::Value>,
@@ -185,7 +185,6 @@ impl TryFrom<ClientConfigEntry> for crate::client::ClientConfig {
         Ok(crate::client::ClientConfig {
             enabled: entry.enabled,
             source: entry.source,
-            link_mode: entry.link_mode.unwrap_or_default(),
             capabilities: None, // Would need JSON deserialization for full support
         })
     }

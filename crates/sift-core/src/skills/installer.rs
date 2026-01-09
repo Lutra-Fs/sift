@@ -1,0 +1,81 @@
+//! Skill installation orchestration.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+
+use crate::fs::{LinkMode, hash_tree};
+use crate::skills::linker::{LinkerOptions, deliver_dir_managed};
+use crate::version::lock::LockedSkill;
+use crate::version::store::LockfileStore;
+
+#[derive(Debug)]
+pub struct SkillInstallResult {
+    pub changed: bool,
+}
+
+#[derive(Debug)]
+pub struct SkillInstaller {
+    store_dir: PathBuf,
+    project_root: Option<PathBuf>,
+}
+
+impl SkillInstaller {
+    pub fn new(store_dir: PathBuf, project_root: Option<PathBuf>) -> Self {
+        Self {
+            store_dir,
+            project_root,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn install(
+        &self,
+        name: &str,
+        cache_dir: &Path,
+        dst_dir: &Path,
+        mode: LinkMode,
+        force: bool,
+        allow_symlink: bool,
+        resolved_version: &str,
+        constraint: &str,
+        registry: &str,
+    ) -> anyhow::Result<SkillInstallResult> {
+        let cache_hash = hash_tree(cache_dir)
+            .with_context(|| format!("Failed to hash cache: {}", cache_dir.display()))?;
+
+        let mut lockfile = LockfileStore::load(self.project_root.clone(), self.store_dir.clone())?;
+        let existing = lockfile.get_skill(name);
+        let expected_hash = existing
+            .and_then(|locked| locked.tree_hash.as_deref())
+            .unwrap_or(&cache_hash);
+
+        let options = LinkerOptions {
+            mode,
+            force,
+            allow_symlink,
+        };
+
+        let report = deliver_dir_managed(cache_dir, dst_dir, &options, existing, expected_hash)?;
+
+        let locked = LockedSkill::new(
+            name.to_string(),
+            resolved_version.to_string(),
+            constraint.to_string(),
+            registry.to_string(),
+        )
+        .with_install_state(
+            dst_dir.to_path_buf(),
+            cache_dir.to_path_buf(),
+            report.mode,
+            cache_hash,
+        );
+
+        lockfile.add_skill(name.to_string(), locked);
+        LockfileStore::save(self.project_root.clone(), self.store_dir.clone(), &lockfile)?;
+
+        Ok(SkillInstallResult {
+            changed: report.changed,
+        })
+    }
+}

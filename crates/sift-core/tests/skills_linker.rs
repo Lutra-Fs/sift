@@ -14,10 +14,15 @@ fn write_file(path: &Path, content: &str) {
     fs::write(path, content).expect("write should succeed in test temp dirs");
 }
 
+fn skill_md(name: &str, body: &str) -> String {
+    format!("---\nname: {name}\ndescription: Test skill for {name}.\n---\n{body}\n")
+}
+
 fn make_src_tree(tmp: &TempDir) -> std::path::PathBuf {
     let src = tmp.path().join("src-skill");
     fs::create_dir_all(&src).expect("create_dir_all should succeed in test temp dirs");
-    write_file(&src.join("SKILL.md"), "# Skill\n");
+    let name = src.file_name().unwrap().to_string_lossy().to_string();
+    write_file(&src.join("SKILL.md"), &skill_md(&name, "# Skill"));
     write_file(&src.join("scripts").join("run.sh"), "echo hello\n");
     src
 }
@@ -45,15 +50,15 @@ fn make_locked_skill_with_hash(
 // ==================== Linker behavior tests (unmanaged delivery) ====================
 
 #[test]
-fn symlink_mode_requires_allow_symlink() {
+fn symlink_mode_downgrades_when_not_allowed() {
     let tmp = tempfile::tempdir().expect("tempdir should succeed");
     let src = make_src_tree(&tmp);
     let src_hash = hash_tree(&src).expect("hash_tree should succeed");
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
 
-    let err = deliver_dir_managed(
+    let report = deliver_dir_managed(
         &src,
         &dst,
         &LinkerOptions {
@@ -64,13 +69,9 @@ fn symlink_mode_requires_allow_symlink() {
         None,
         &src_hash,
     )
-    .unwrap_err()
-    .to_string();
+    .expect("symlink mode should downgrade when not allowed");
 
-    assert!(err.to_lowercase().contains("symlink"));
-    assert!(
-        err.to_lowercase().contains("not allowed") || err.to_lowercase().contains("capability")
-    );
+    assert!(matches!(report.mode, LinkMode::Hardlink | LinkMode::Copy));
 }
 
 #[cfg(unix)]
@@ -87,7 +88,7 @@ fn auto_falls_back_to_copy_on_cross_device_hardlink() {
 
     let dst_root =
         tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("tempdir_in should succeed");
-    let dst = dst_root.path().join("dst-skill");
+    let dst = dst_root.path().join("src-skill");
     let dst_dev = fs::metadata(dst_root.path())
         .expect("dst_root metadata should succeed")
         .dev();
@@ -122,7 +123,7 @@ fn deliver_managed_unmanaged_dir_fails_without_force() {
     let src_hash = hash_tree(&src).expect("hash_tree should succeed");
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
     fs::create_dir_all(&dst).expect("create_dir_all should succeed");
     write_file(&dst.join("different.txt"), "different content");
 
@@ -150,7 +151,7 @@ fn deliver_managed_unmanaged_dir_succeeds_with_force() {
     let src_hash = hash_tree(&src).expect("hash_tree should succeed");
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
     fs::create_dir_all(&dst).expect("create_dir_all should succeed");
     write_file(&dst.join("different.txt"), "different content");
 
@@ -182,7 +183,7 @@ fn deliver_managed_with_matching_hash_skips() {
     let src_hash = hash_tree(&src).expect("hash_tree should succeed");
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
 
     // First delivery
     let existing_skill = None;
@@ -226,7 +227,7 @@ fn deliver_managed_with_hash_mismatch_fails_without_force() {
     let src_hash = hash_tree(&src).expect("hash_tree should succeed");
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
 
     // Create initial installation
     let locked_skill = None;
@@ -244,7 +245,8 @@ fn deliver_managed_with_hash_mismatch_fails_without_force() {
     .expect("first delivery should succeed");
 
     // Modify dst
-    write_file(&dst.join("SKILL.md"), "# Modified Skill\n");
+    let name = dst.file_name().unwrap().to_string_lossy().to_string();
+    write_file(&dst.join("SKILL.md"), &skill_md(&name, "# Modified Skill"));
 
     // Create a lockfile record with old hash
     let locked_skill = make_locked_skill_with_hash(&dst, &src, LinkMode::Copy, &src_hash);
@@ -274,7 +276,7 @@ fn deliver_managed_with_hash_mismatch_succeeds_with_force() {
     let src_hash = hash_tree(&src).expect("hash_tree should succeed");
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
 
     // Create initial installation
     let locked_skill = None;
@@ -292,7 +294,8 @@ fn deliver_managed_with_hash_mismatch_succeeds_with_force() {
     .expect("first delivery should succeed");
 
     // Modify dst
-    write_file(&dst.join("SKILL.md"), "# Modified Skill\n");
+    let name = dst.file_name().unwrap().to_string_lossy().to_string();
+    write_file(&dst.join("SKILL.md"), &skill_md(&name, "# Modified Skill"));
 
     // Create a lockfile record with old hash
     let locked_skill = make_locked_skill_with_hash(&dst, &src, LinkMode::Copy, &src_hash);
@@ -327,7 +330,7 @@ fn deliver_managed_cache_dirty_fails_without_force() {
     let wrong_hash = "deadbeef".repeat(16);
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
 
     let err = deliver_dir_managed(
         &src,
@@ -355,7 +358,7 @@ fn deliver_managed_cache_dirty_succeeds_with_force() {
     let wrong_hash = "deadbeef".repeat(16);
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
 
     let report = deliver_dir_managed(
         &src,
@@ -380,7 +383,7 @@ fn deliver_managed_creates_correct_hash_for_copy() {
     let src_hash = hash_tree(&src).expect("hash_tree should succeed");
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
 
     let report = deliver_dir_managed(
         &src,
@@ -412,7 +415,7 @@ fn deliver_managed_creates_correct_hash_for_hardlink() {
     let src_hash = hash_tree(&src).expect("hash_tree should succeed");
 
     let out = tempfile::tempdir().expect("tempdir should succeed");
-    let dst = out.path().join("dst-skill");
+    let dst = out.path().join("src-skill");
 
     let report = deliver_dir_managed(
         &src,

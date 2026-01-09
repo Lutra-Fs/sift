@@ -1,5 +1,6 @@
 //! Skills management
 
+pub mod installer;
 pub mod linker;
 pub mod schema;
 
@@ -21,34 +22,4 @@ pub struct Skill {
     pub source: String,
 }
 
-/// Manager for skills
-#[derive(Debug)]
-pub struct SkillManager;
-
-impl SkillManager {
-    /// Create a new skill manager
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// List all configured skills
-    pub fn list_skills(&self) -> Vec<Skill> {
-        Vec::new()
-    }
-
-    /// Add a new skill
-    pub fn add_skill(&self, _skill: Skill) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    /// Remove a skill
-    pub fn remove_skill(&self, _id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl Default for SkillManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Legacy manager removed: operations should go through install/update services.

@@ -2,6 +2,7 @@
 //!
 //! Implements snapshot-based version locking for reproducibility
 
+pub mod git;
 pub mod lock;
 pub mod store;
 

@@ -114,8 +114,11 @@ fn deliver_dir(
 
     match options.mode {
         LinkMode::Symlink => {
-            ensure_symlink_allowed(options)?;
-            deliver_symlink(src_dir, dst_dir, options)
+            if options.allow_symlink {
+                deliver_symlink(src_dir, dst_dir, options)
+            } else {
+                deliver_auto(src_dir, dst_dir, options)
+            }
         }
         LinkMode::Copy => deliver_copy(src_dir, dst_dir, options),
         LinkMode::Hardlink => deliver_hardlink(src_dir, dst_dir, options),
@@ -139,13 +142,6 @@ fn ensure_parent_dir(dst_dir: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(parent)
         .with_context(|| format!("Failed to create destination parent: {}", parent.display()))?;
     Ok(())
-}
-
-fn ensure_symlink_allowed(options: &LinkerOptions) -> anyhow::Result<()> {
-    if options.allow_symlink {
-        return Ok(());
-    }
-    anyhow::bail!("Symlink link mode is not allowed by client capability");
 }
 
 fn deliver_auto(

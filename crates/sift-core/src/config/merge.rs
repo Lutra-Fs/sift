@@ -67,6 +67,11 @@ fn merge_sift_config(
             .or_insert(entry);
     }
 
+    // Merge global link mode
+    if layer.link_mode.is_some() {
+        base.link_mode = layer.link_mode;
+    }
+
     // Merge clients
     for (key, entry) in layer.clients {
         base.clients
@@ -187,9 +192,6 @@ fn merge_client_entry(
     base.enabled = overlay.enabled;
     if overlay.source.is_some() {
         base.source = overlay.source;
-    }
-    if overlay.link_mode.is_some() {
-        base.link_mode = overlay.link_mode;
     }
     if overlay.capabilities.is_some() {
         base.capabilities = overlay.capabilities;

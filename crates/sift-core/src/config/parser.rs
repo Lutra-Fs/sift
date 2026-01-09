@@ -265,9 +265,10 @@ args = ["--arg1"]
 source = "registry:skill1"
 version = "1.0.0"
 
+link_mode = "auto"
+
 [clients.claude-desktop]
 enabled = true
-link_mode = "auto"
 
 [registry.official]
 type = "sift"

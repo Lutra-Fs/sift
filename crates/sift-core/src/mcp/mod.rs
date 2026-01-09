@@ -1,11 +1,13 @@
 //! MCP (Model Context Protocol) server management
 
 pub mod schema;
+pub mod spec;
 
 use serde::{Deserialize, Serialize};
 
 // Re-export the new schema types
 pub use schema::{McpConfig, McpConfigOverride, RuntimeType, TransportType};
+pub use spec::{McpResolvedServer, McpTransport};
 
 /// Represents an MCP server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,34 +26,4 @@ pub struct McpServer {
     pub env: Vec<String>,
 }
 
-/// Manager for MCP servers
-#[derive(Debug)]
-pub struct McpManager;
-
-impl McpManager {
-    /// Create a new MCP manager
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// List all configured MCP servers
-    pub fn list_servers(&self) -> Vec<McpServer> {
-        Vec::new()
-    }
-
-    /// Add a new MCP server
-    pub fn add_server(&self, _server: McpServer) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    /// Remove an MCP server
-    pub fn remove_server(&self, _id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl Default for McpManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Legacy manager removed: operations should go through install/update services.

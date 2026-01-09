@@ -6,8 +6,10 @@
 pub mod client;
 pub mod config;
 pub mod fs;
+pub mod install;
 pub mod mcp;
 pub mod registry;
+pub mod runtime;
 pub mod skills;
 pub mod version;
 
@@ -20,15 +22,14 @@ pub mod prelude {
     };
 
     // MCP
-    pub use crate::mcp::{McpConfig, McpConfigOverride, McpManager, McpServer, RuntimeType};
+    pub use crate::mcp::{McpConfig, McpConfigOverride, McpServer, RuntimeType};
 
     // Skills
-    pub use crate::skills::{Skill, SkillConfig, SkillConfigOverride, SkillManager};
+    pub use crate::skills::{Skill, SkillConfig, SkillConfigOverride};
 
     // Client
     pub use crate::client::{
-        ClientAdapter, ClientCapabilities, ClientConfig, ClientType, McpConfigFormat,
-        SkillDeliveryMode,
+        ClientCapabilities, ClientConfig, McpConfigFormat, ScopeSupport, SkillDeliveryMode,
     };
 
     // Filesystem

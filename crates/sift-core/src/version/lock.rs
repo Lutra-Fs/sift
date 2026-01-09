@@ -23,6 +23,10 @@ pub struct Lockfile {
     /// Locked skills (version + install state)
     #[serde(default)]
     pub skills: HashMap<String, LockedSkill>,
+
+    /// Managed config ownership hashes
+    #[serde(default)]
+    pub managed_configs: HashMap<String, HashMap<String, String>>,
 }
 
 impl Lockfile {
@@ -33,6 +37,7 @@ impl Lockfile {
             generated_at: chrono::Utc::now(),
             mcp_servers: HashMap::new(),
             skills: HashMap::new(),
+            managed_configs: HashMap::new(),
         }
     }
 
