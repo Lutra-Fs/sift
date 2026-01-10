@@ -33,9 +33,9 @@ pub struct SiftConfig {
     #[serde(default)]
     pub registry: HashMap<String, RegistryConfigEntry>,
 
-    /// Project-local overrides (ONLY valid in global config)
+    /// Project-local configuration (ONLY valid in global config)
     #[serde(default)]
-    pub projects: HashMap<String, ProjectOverride>,
+    pub projects: HashMap<String, ProjectConfig>,
 }
 
 /// MCP server configuration entry (inline config for TOML)
@@ -232,22 +232,30 @@ impl TryFrom<RegistryConfigEntry> for crate::registry::RegistryConfig {
     }
 }
 
-/// Project-specific configuration override
+/// Project-specific configuration
 ///
 /// Key is absolute path to project root
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProjectOverride {
+pub struct ProjectConfig {
     /// Path to project (absolute) - inferred from the key
     #[serde(default)]
     pub path: std::path::PathBuf,
 
+    /// Project-local MCP entries for this project
+    #[serde(default)]
+    pub mcp: HashMap<String, McpConfigEntry>,
+
+    /// Project-local skill entries for this project
+    #[serde(default)]
+    pub skill: HashMap<String, SkillConfigEntry>,
+
     /// MCP server overrides for this project
     #[serde(default)]
-    pub mcp: HashMap<String, McpOverrideEntry>,
+    pub mcp_overrides: HashMap<String, McpOverrideEntry>,
 
     /// Skill overrides for this project
     #[serde(default)]
-    pub skill: HashMap<String, SkillOverrideEntry>,
+    pub skill_overrides: HashMap<String, SkillOverrideEntry>,
 }
 
 /// MCP server override for project-local configuration
@@ -304,9 +312,18 @@ impl SiftConfig {
 
     /// Validate the configuration
     pub fn validate(&self) -> anyhow::Result<()> {
-        // Validate project overrides in the global config.
-        for (project_key, override_config) in &self.projects {
-            for (mcp_name, mcp_override) in &override_config.mcp {
+        // Validate project-local entries and overrides in the global config.
+        for (project_key, project_config) in &self.projects {
+            for (mcp_name, entry) in &project_config.mcp {
+                let config: crate::mcp::McpConfig =
+                    entry.clone().try_into().with_context(|| {
+                        format!("Invalid MCP entry for project '{project_key}', MCP '{mcp_name}'")
+                    })?;
+                config.validate().with_context(|| {
+                    format!("Invalid MCP entry for project '{project_key}', MCP '{mcp_name}'")
+                })?;
+            }
+            for (mcp_name, mcp_override) in &project_config.mcp_overrides {
                 if let Some(runtime_str) = mcp_override.runtime.as_deref() {
                     crate::mcp::RuntimeType::try_from(runtime_str).with_context(|| {
                         format!(
@@ -314,6 +331,17 @@ impl SiftConfig {
                         )
                     })?;
                 }
+            }
+            for (skill_name, entry) in &project_config.skill {
+                let config: crate::skills::SkillConfig =
+                    entry.clone().try_into().with_context(|| {
+                        format!(
+                            "Invalid skill entry for project '{project_key}', skill '{skill_name}'"
+                        )
+                    })?;
+                config.validate().with_context(|| {
+                    format!("Invalid skill entry for project '{project_key}', skill '{skill_name}'")
+                })?;
             }
         }
 
@@ -414,9 +442,9 @@ impl SiftConfig {
         !self.projects.is_empty()
     }
 
-    /// Get the project override for a given path
+    /// Get the project configuration for a given path
     ///
-    /// Returns `(project_key, override_config)` where `project_key` is the
+    /// Returns `(project_key, project_config)` where `project_key` is the
     /// matching path from the projects map.
     ///
     /// Path matching is deterministic: tries exact match first, then longest
@@ -425,20 +453,20 @@ impl SiftConfig {
     /// Note: Paths should be normalized before calling this method.
     /// Use `Path::canonicalize()` for symlinks, or normalize with
     /// `Path::components()` for relative path resolution.
-    pub fn get_project_override(&self, path: &Path) -> Option<(String, &ProjectOverride)> {
+    pub fn get_project_config(&self, path: &Path) -> Option<(String, &ProjectConfig)> {
         // Try exact match first - use get_key_value to get the actual key reference
         let path_str = path.to_string_lossy().to_string();
-        if let Some((key, override_config)) = self.projects.get_key_value(&path_str) {
-            return Some((key.clone(), override_config));
+        if let Some((key, project_config)) = self.projects.get_key_value(&path_str) {
+            return Some((key.clone(), project_config));
         }
 
         // Sort by length (descending) for longest prefix match
         let mut sorted: Vec<_> = self.projects.iter().collect();
         sorted.sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
 
-        for (project_path, override_config) in sorted {
+        for (project_path, project_config) in sorted {
             if path.starts_with(project_path) {
-                return Some((project_path.to_string(), override_config));
+                return Some((project_path.to_string(), project_config));
             }
         }
 
@@ -464,10 +492,9 @@ mod tests {
     #[test]
     fn test_config_with_projects_is_global() {
         let mut config = SiftConfig::new();
-        config.projects.insert(
-            "/Users/test/project".to_string(),
-            ProjectOverride::default(),
-        );
+        config
+            .projects
+            .insert("/Users/test/project".to_string(), ProjectConfig::default());
         assert!(config.is_global());
     }
 
@@ -517,36 +544,34 @@ mod tests {
     }
 
     #[test]
-    fn test_get_project_override() {
+    fn test_get_project_config() {
         let mut config = SiftConfig::new();
         let project_path = "/Users/test/project".to_string();
-        let override_config = ProjectOverride {
+        let project_config = ProjectConfig {
             path: std::path::PathBuf::from(&project_path),
             ..Default::default()
         };
-        config
-            .projects
-            .insert(project_path.clone(), override_config);
+        config.projects.insert(project_path.clone(), project_config);
 
-        let found = config.get_project_override(&std::path::PathBuf::from("/Users/test/project"));
+        let found = config.get_project_config(&std::path::PathBuf::from("/Users/test/project"));
         assert!(found.is_some());
         assert_eq!(found.unwrap().0, "/Users/test/project");
 
-        let not_found = config.get_project_override(&std::path::PathBuf::from("/other/path"));
+        let not_found = config.get_project_config(&std::path::PathBuf::from("/other/path"));
         assert!(not_found.is_none());
     }
 
     #[test]
-    fn test_project_override_deterministic_longest_match() {
+    fn test_project_config_deterministic_longest_match() {
         let mut config = SiftConfig::new();
         config
             .projects
-            .insert("/Users/me".to_string(), ProjectOverride::default());
+            .insert("/Users/me".to_string(), ProjectConfig::default());
         config
             .projects
-            .insert("/Users/me/repos".to_string(), ProjectOverride::default());
+            .insert("/Users/me/repos".to_string(), ProjectConfig::default());
 
-        let result = config.get_project_override(std::path::Path::new("/Users/me/repos/project"));
+        let result = config.get_project_config(std::path::Path::new("/Users/me/repos/project"));
         // Should ALWAYS return the longer match key, regardless of HashMap order
         assert_eq!(result.unwrap().0, "/Users/me/repos");
     }
@@ -626,8 +651,8 @@ mod tests {
     fn test_validate_rejects_invalid_project_override_runtime() {
         let mut config = SiftConfig::new();
 
-        let mut override_config = ProjectOverride::default();
-        override_config.mcp.insert(
+        let mut project_config = ProjectConfig::default();
+        project_config.mcp_overrides.insert(
             "test-mcp".to_string(),
             McpOverrideEntry {
                 runtime: Some("doker".to_string()),
@@ -637,7 +662,7 @@ mod tests {
 
         config
             .projects
-            .insert("/Users/test/project".to_string(), override_config);
+            .insert("/Users/test/project".to_string(), project_config);
 
         let err = config
             .validate()

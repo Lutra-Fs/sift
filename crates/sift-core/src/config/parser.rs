@@ -133,10 +133,7 @@ source = "registry:postgres-mcp"
 source = "registry:test"
 runtime = "node"
 
-[projects."/Users/test/project"]
-mcp_override = []
-
-[projects."/Users/test/project".mcp.test-mcp]
+[projects."/Users/test/project".mcp_overrides.test-mcp]
 runtime = "docker"
 "#;
 

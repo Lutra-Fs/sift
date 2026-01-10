@@ -70,6 +70,11 @@ Sift follows a strict "Do No Harm" policy regarding configuration files.
     *   Configuration: `url`, `headers` (supports `${VAR}` expansion).
 3.  **SSE**: Intentionally excluded to keep configuration deterministic.
 
+#### **CLI Explicit Install**
+*   当用户提供 stdio 命令（`--transport stdio -- <command>`）或 HTTP URL（`--transport http --url <url>`）时，Sift 直接写入配置，不再从 registry 解析。
+*   如果同时提供 `--source` 或 `name@version`，CLI 会忽略这些参数并给出警告。
+*   仅提供 `--env`/`--header` 时仍会走 registry 解析逻辑。
+
 #### **Heterogeneous Runtimes**
 Sift treats runtimes as first-class citizens.
 *   **Manifest Strategy**: Registries define defaults (e.g., `default_runtime = "docker"`).
@@ -88,6 +93,12 @@ To avoid polluting the system PATH, Sift enforces cache isolation for runtimes:
 *   **Link Mode (`link_mode`)**: Defines how skills are exposed to clients.
     *   **Global Policy**: Set in `sift.toml`.
     *   **Downgrade Strategy**: If a client lacks capability (e.g., doesn't support symlinks), Sift automatically downgrades: `Symlink → Hardlink → Copy`.
+
+#### **Naming & Source Inference**
+*   **Directory Name as Identity**: Skill 的目录名必须与 `SKILL.md` 的 `name` 一致，因此 CLI 在本地路径安装时直接使用目录名作为 skill name，无需额外读取 `SKILL.md`。
+*   **Local/Git Auto-Detect**: 当用户提供本地路径或 Git URL 时，CLI 会自动推导 `source` 为 `local:` 或 `git:`，不再强制要求 `--source`。
+*   **Registry Disambiguation**: 若多个 registry/marketplace 提供同名 skill 或 MCP，且用户未显式指定 `--source`，CLI 将给出警告并要求用户明确选择。
+*   **Version Declaration**: 仅支持 `name@version` 表达版本约束（不再提供 `--version`），解析后作为 declared version 写入配置。
 
 #### **Lifecycle: Ejection**
 Allows users to modify a managed skill by converting it to a local project file.
@@ -120,6 +131,7 @@ Sift separates **Fetch** (I/O) from **Adapt** (Transform) to handle heterogeneou
 #### **Philosophy: Reproducibility > Freshness**
 *   **Install-Time Snapshot**: `sift add` resolves the **latest** version and **locks** it immediately.
 *   **Explicit Upgrade**: Updates only happen on `sift upgrade`.
+*   **Registry Capabilities**: 由 registry 实现声明是否支持历史版本；不支持时对 `name@version` 给出警告并忽略版本。
 
 #### **Lockability Matrix**
 | Source | Lockable? | Resolution Strategy |

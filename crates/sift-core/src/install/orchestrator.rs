@@ -9,9 +9,7 @@ use crate::config::managed_json::apply_managed_entries_in_path;
 use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
 use crate::fs::LinkMode;
 use crate::install::git_exclude::ensure_git_exclude;
-use crate::install::scope::{
-    RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
-};
+use crate::install::scope::ScopeResolution;
 use crate::install::{InstallOutcome, InstallService};
 use crate::skills::installer::{SkillInstallResult, SkillInstaller};
 use crate::version::lock::LockedMcpServer;
@@ -29,7 +27,7 @@ pub struct InstallMcpRequest<'a> {
     pub name: &'a str,
     pub entry: McpConfigEntry,
     pub servers: &'a [crate::mcp::spec::McpResolvedServer],
-    pub request: ScopeRequest,
+    pub resolution: ScopeResolution,
     pub force: bool,
     pub declared_version: Option<&'a str>,
 }
@@ -75,11 +73,7 @@ impl InstallOrchestrator {
         ctx: &ClientContext,
         req: InstallMcpRequest<'_>,
     ) -> anyhow::Result<InstallReport> {
-        let support = client.capabilities().mcp;
-        let repo = RepoStatus::from_project_root(&ctx.project_root);
-        let resolution = resolve_scope(ResourceKind::Mcp, req.request, support, repo)?;
-
-        match resolution {
+        match req.resolution {
             ScopeResolution::Skip { warning } => {
                 let entry = req.entry.clone();
                 let outcome = self.install.install_mcp(req.name, req.entry, req.force)?;
@@ -165,16 +159,12 @@ impl InstallOrchestrator {
         name: &str,
         entry: SkillConfigEntry,
         cache_dir: &Path,
-        request: ScopeRequest,
+        resolution: ScopeResolution,
         force: bool,
         resolved_version: &str,
         constraint: &str,
         registry: &str,
     ) -> anyhow::Result<SkillInstallReport> {
-        let support = client.capabilities().skills;
-        let repo = RepoStatus::from_project_root(&ctx.project_root);
-        let resolution = resolve_scope(ResourceKind::Skill, request, support, repo)?;
-
         match resolution {
             ScopeResolution::Skip { warning } => {
                 let outcome = self.install.install_skill(name, entry, force)?;

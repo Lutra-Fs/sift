@@ -3,7 +3,7 @@
 //! Implements the 3-layer merge strategy:
 //! Global -> Project -> Project-Local
 
-use super::schema::{McpConfigEntry, ProjectOverride, SiftConfig, SkillConfigEntry};
+use super::schema::{McpConfigEntry, ProjectConfig, SiftConfig, SkillConfigEntry};
 use anyhow::Context;
 use std::path::Path;
 
@@ -29,13 +29,13 @@ pub fn merge_configs(
         merge_sift_config(&mut merged, proj, false)?; // is_global = false
     }
 
-    // Extract and apply project-local override from global
+    // Extract and apply project-local config from global
     let project_path_buf = project_path.to_path_buf();
-    let override_config_to_apply = merged
-        .get_project_override(&project_path_buf)
+    let project_config_to_apply = merged
+        .get_project_config(&project_path_buf)
         .map(|(_k, v)| v.clone());
-    if let Some(override_config) = override_config_to_apply {
-        apply_project_override(&mut merged, &override_config)?;
+    if let Some(project_config) = project_config_to_apply {
+        apply_project_config(&mut merged, &project_config)?;
     }
 
     // Remove the projects section after applying overrides
@@ -88,8 +88,8 @@ fn merge_sift_config(
     // ONLY merge projects from global layer
     if !layer.projects.is_empty() {
         if is_global_layer {
-            for (key, override_config) in layer.projects {
-                base.projects.entry(key).or_insert(override_config);
+            for (key, project_config) in layer.projects {
+                base.projects.entry(key).or_insert(project_config);
             }
         } else {
             // Warn but don't fail - ignore projects section from project layers
@@ -199,12 +199,20 @@ fn merge_client_entry(
 }
 
 /// Apply project-local override from global config
-fn apply_project_override(
+fn apply_project_config(
     base: &mut SiftConfig,
-    override_config: &ProjectOverride,
+    project_config: &ProjectConfig,
 ) -> anyhow::Result<()> {
+    // Apply project-local entries
+    for (key, entry) in &project_config.mcp {
+        base.mcp.insert(key.clone(), entry.clone());
+    }
+    for (key, entry) in &project_config.skill {
+        base.skill.insert(key.clone(), entry.clone());
+    }
+
     // Apply MCP overrides (only env and runtime)
-    for (key, mcp_override) in &override_config.mcp {
+    for (key, mcp_override) in &project_config.mcp_overrides {
         if let Some(existing) = base.mcp.get_mut(key) {
             apply_mcp_override(existing, mcp_override)
                 .with_context(|| format!("Invalid MCP override for '{key}'"))?;
@@ -212,7 +220,7 @@ fn apply_project_override(
     }
 
     // Apply skill overrides
-    for (key, skill_override) in &override_config.skill {
+    for (key, skill_override) in &project_config.skill_overrides {
         if let Some(existing) = base.skill.get_mut(key) {
             apply_skill_override(existing, skill_override);
         }
@@ -503,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_project_override() {
+    fn test_apply_project_config() {
         let mut config = SiftConfig::new();
         config.mcp.insert(
             "test-mcp".to_string(),
@@ -528,8 +536,8 @@ mod tests {
             },
         );
 
-        let mut override_config = ProjectOverride::default();
-        override_config.mcp.insert(
+        let mut project_config = ProjectConfig::default();
+        project_config.mcp_overrides.insert(
             "test-mcp".to_string(),
             crate::config::schema::McpOverrideEntry {
                 runtime: Some("docker".to_string()),
@@ -541,7 +549,7 @@ mod tests {
             },
         );
 
-        apply_project_override(&mut config, &override_config).unwrap();
+        apply_project_config(&mut config, &project_config).unwrap();
 
         let mcp = config.mcp.get("test-mcp").unwrap();
         assert_eq!(mcp.runtime, Some("docker".to_string()));
@@ -551,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_configs_with_project_override() {
+    fn test_merge_configs_with_project_config() {
         let mut global = SiftConfig::new();
         global.mcp.insert(
             "test-mcp".to_string(),
@@ -573,11 +581,11 @@ mod tests {
         );
 
         let project_path = Path::new("/test/project");
-        let mut override_config = ProjectOverride {
+        let mut project_config = ProjectConfig {
             path: project_path.to_path_buf(),
             ..Default::default()
         };
-        override_config.mcp.insert(
+        project_config.mcp_overrides.insert(
             "test-mcp".to_string(),
             crate::config::schema::McpOverrideEntry {
                 runtime: Some("docker".to_string()),
@@ -587,7 +595,7 @@ mod tests {
 
         global
             .projects
-            .insert(project_path.to_string_lossy().to_string(), override_config);
+            .insert(project_path.to_string_lossy().to_string(), project_config);
 
         let merged = merge_configs(Some(global), None, project_path).unwrap();
 
@@ -630,7 +638,7 @@ mod tests {
         let mut global = SiftConfig::new();
         global
             .projects
-            .insert("/test/project".to_string(), ProjectOverride::default());
+            .insert("/test/project".to_string(), ProjectConfig::default());
 
         let merged = merge_configs(Some(global), None, Path::new("/test/project")).unwrap();
 
@@ -639,15 +647,15 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_project_override_rejects_invalid_runtime() {
+    fn test_apply_project_config_rejects_invalid_runtime() {
         let mut config = SiftConfig::new();
         config.mcp.insert(
             "test-mcp".to_string(),
             create_mcp_entry("registry:test", "node"),
         );
 
-        let mut override_config = ProjectOverride::default();
-        override_config.mcp.insert(
+        let mut project_config = ProjectConfig::default();
+        project_config.mcp_overrides.insert(
             "test-mcp".to_string(),
             crate::config::schema::McpOverrideEntry {
                 runtime: Some("doker".to_string()),
@@ -655,10 +663,10 @@ mod tests {
             },
         );
 
-        let result = apply_project_override(&mut config, &override_config);
+        let result = apply_project_config(&mut config, &project_config);
         assert!(
             result.is_err(),
-            "apply_project_override() must fail for invalid override runtime"
+            "apply_project_config() must fail for invalid override runtime"
         );
     }
 }

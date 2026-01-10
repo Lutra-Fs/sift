@@ -2,12 +2,13 @@ use std::fs;
 
 use tempfile::TempDir;
 
+use sift_core::client::ClientAdapter;
 use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
 use sift_core::config::{ConfigScope, ConfigStore, SkillConfigEntry};
 use sift_core::fs::LinkMode;
 use sift_core::install::orchestrator::InstallOrchestrator;
-use sift_core::install::scope::ScopeRequest;
+use sift_core::install::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::skills::installer::SkillInstaller;
 
 fn skill_md(name: &str) -> String {
@@ -51,6 +52,14 @@ fn install_skill_links_to_project_scope() {
         reset_version: false,
     };
 
+    let resolution = resolve_scope(
+        ResourceKind::Skill,
+        ScopeRequest::Explicit(ConfigScope::PerProjectShared),
+        adapter.capabilities().skills,
+        RepoStatus::from_project_root(&ctx.project_root),
+    )
+    .unwrap();
+
     let report = orchestrator
         .install_skill(
             &adapter,
@@ -58,7 +67,7 @@ fn install_skill_links_to_project_scope() {
             "demo",
             entry,
             &cache_dir,
-            ScopeRequest::Explicit(ConfigScope::PerProjectShared),
+            resolution,
             false,
             "resolved-1",
             "latest",

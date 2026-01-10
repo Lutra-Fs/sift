@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use tempfile::TempDir;
 
+use sift_core::client::ClientAdapter;
 use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
 use sift_core::config::{ConfigScope, ConfigStore, McpConfigEntry};
 use sift_core::fs::LinkMode;
 use sift_core::install::orchestrator::InstallMcpRequest;
 use sift_core::install::orchestrator::InstallOrchestrator;
-use sift_core::install::scope::ScopeRequest;
+use sift_core::install::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::mcp::spec::McpResolvedServer;
 
 #[test]
@@ -62,6 +63,14 @@ fn install_mcp_updates_config_and_writes_project_file() {
         HashMap::new(),
     )];
 
+    let resolution = resolve_scope(
+        ResourceKind::Mcp,
+        ScopeRequest::Explicit(ConfigScope::PerProjectShared),
+        adapter.capabilities().mcp,
+        RepoStatus::from_project_root(&ctx.project_root),
+    )
+    .unwrap();
+
     let report = orchestrator
         .install_mcp(
             &adapter,
@@ -70,7 +79,7 @@ fn install_mcp_updates_config_and_writes_project_file() {
                 name: "demo",
                 entry,
                 servers: &servers,
-                request: ScopeRequest::Explicit(ConfigScope::PerProjectShared),
+                resolution,
                 force: false,
                 declared_version: None,
             },

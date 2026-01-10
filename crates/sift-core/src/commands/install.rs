@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+use crate::client::ClientAdapter;
 use crate::client::ClientContext;
 use crate::client::claude_code::ClaudeCodeClient;
 use crate::config::{
@@ -15,7 +16,9 @@ use crate::config::{
 };
 use crate::fs::LinkMode;
 use crate::install::orchestrator::{InstallMcpRequest, InstallOrchestrator};
-use crate::install::scope::ScopeRequest;
+use crate::install::scope::{
+    RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
+};
 use crate::mcp::spec::McpResolvedServer;
 use crate::skills::installer::SkillInstaller;
 
@@ -271,9 +274,6 @@ impl InstallCommand {
 
     /// Install an MCP server
     fn install_mcp(&self, options: &InstallOptions) -> anyhow::Result<InstallReport> {
-        // Determine scope
-        let scope = options.scope.unwrap_or(ConfigScope::PerProjectShared);
-
         let env = parse_key_values(&options.env, "env")?;
         let headers = parse_key_values(&options.headers, "header")?;
         let has_command = !options.command.is_empty();
@@ -344,17 +344,6 @@ impl InstallCommand {
             reset_env_all: false,
         };
 
-        // Create orchestrator
-        let config_store = self.create_config_store(scope)?;
-        let ownership_store = self.create_ownership_store();
-        let skill_installer = self.create_skill_installer();
-        let orchestrator = InstallOrchestrator::new(
-            config_store,
-            ownership_store,
-            skill_installer,
-            self.link_mode,
-        );
-
         // Create client adapter and context
         let client = ClaudeCodeClient::new();
         let ctx = ClientContext::new(self.home_dir.clone(), self.project_root.clone());
@@ -368,6 +357,30 @@ impl InstallCommand {
             None => ScopeRequest::Auto,
         };
 
+        let repo = RepoStatus::from_project_root(&ctx.project_root);
+        let resolution = resolve_scope(
+            ResourceKind::Mcp,
+            scope_request,
+            client.capabilities().mcp,
+            repo,
+        )?;
+
+        let config_scope = match &resolution {
+            ScopeResolution::Apply(decision) => decision.scope,
+            ScopeResolution::Skip { .. } => options.scope.unwrap_or(ConfigScope::PerProjectShared),
+        };
+
+        // Create orchestrator
+        let config_store = self.create_config_store(config_scope)?;
+        let ownership_store = self.create_ownership_store();
+        let skill_installer = self.create_skill_installer();
+        let orchestrator = InstallOrchestrator::new(
+            config_store,
+            ownership_store,
+            skill_installer,
+            self.link_mode,
+        );
+
         // Execute installation
         let report = orchestrator.install_mcp(
             &client,
@@ -376,7 +389,7 @@ impl InstallCommand {
                 name: &name,
                 entry,
                 servers: &servers,
-                request: scope_request,
+                resolution,
                 force: options.force,
                 declared_version: version.as_deref(),
             },
@@ -393,9 +406,6 @@ impl InstallCommand {
 
     /// Install a skill
     fn install_skill(&self, options: &InstallOptions) -> anyhow::Result<InstallReport> {
-        // Determine scope
-        let scope = options.scope.unwrap_or(ConfigScope::PerProjectShared);
-
         // Build config entry
         let (name, source, source_is_registry, source_explicit) =
             self.resolve_name_and_source(&options.name, options.source.as_deref())?;
@@ -408,17 +418,6 @@ impl InstallCommand {
             ignore_targets: None,
             reset_version: false,
         };
-
-        // Create orchestrator
-        let config_store = self.create_config_store(scope)?;
-        let ownership_store = self.create_ownership_store();
-        let skill_installer = self.create_skill_installer();
-        let orchestrator = InstallOrchestrator::new(
-            config_store,
-            ownership_store,
-            skill_installer,
-            self.link_mode,
-        );
 
         // Create client adapter and context
         let client = ClaudeCodeClient::new();
@@ -439,6 +438,30 @@ impl InstallCommand {
             None => ScopeRequest::Auto,
         };
 
+        let repo = RepoStatus::from_project_root(&ctx.project_root);
+        let resolution = resolve_scope(
+            ResourceKind::Skill,
+            scope_request,
+            client.capabilities().skills,
+            repo,
+        )?;
+
+        let config_scope = match &resolution {
+            ScopeResolution::Apply(decision) => decision.scope,
+            ScopeResolution::Skip { .. } => options.scope.unwrap_or(ConfigScope::PerProjectShared),
+        };
+
+        // Create orchestrator
+        let config_store = self.create_config_store(config_scope)?;
+        let ownership_store = self.create_ownership_store();
+        let skill_installer = self.create_skill_installer();
+        let orchestrator = InstallOrchestrator::new(
+            config_store,
+            ownership_store,
+            skill_installer,
+            self.link_mode,
+        );
+
         // Version for lockfile
         let version = options
             .version
@@ -452,7 +475,7 @@ impl InstallCommand {
             &name,
             entry,
             &cache_dir,
-            scope_request,
+            resolution,
             options.force,
             &version,
             &version,

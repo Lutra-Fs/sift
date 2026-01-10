@@ -53,6 +53,24 @@ The `sift` binary provides multiple interfaces depending on your needs:
 # Install a tool (defaults to Global)
 sift install <tool-name>
 
+# Install with a declared version (registry sources only)
+sift install mcp postgres@1.2.3
+
+# install skill from local path
+sift install skill ./skills/commit
+
+# install skill from Git URL
+sift install skill https://github.com/org/skills/tree/main/skills/gh-fix-ci
+
+# specify source registry when multiple registries can provide the tool
+sift install skill commit --source registry:official/commit
+
+#  explicitly install MCP (stdio + command)
+sift install mcp custom --transport stdio -- npx -y @acme/server
+
+# explicitly install MCP (http + url)
+sift install mcp custom --transport http --url https://mcp.example.com
+
 # Install a tool for the current project (Shared)
 sift install <tool-name> --scope project
 

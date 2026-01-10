@@ -22,7 +22,7 @@ pub mod prelude {
 
     // Configuration
     pub use crate::config::{
-        ClientConfigEntry, ConfigManager, ConfigScope, McpConfigEntry, ProjectOverride, SiftConfig,
+        ClientConfigEntry, ConfigManager, ConfigScope, McpConfigEntry, ProjectConfig, SiftConfig,
         SkillConfigEntry,
     };
 

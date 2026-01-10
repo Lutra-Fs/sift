@@ -29,6 +29,35 @@ impl InstallService {
         force: bool,
     ) -> anyhow::Result<InstallOutcome> {
         let mut config = self.store.load()?;
+        let scope = self.store.scope();
+        if scope == crate::config::ConfigScope::PerProjectLocal {
+            let project_key = self.store.project_root().to_string_lossy().to_string();
+            let project_override = config.projects.entry(project_key.clone()).or_default();
+            project_override.path = self.store.project_root().to_path_buf();
+
+            match project_override.skill.get(name) {
+                None => {
+                    project_override.skill.insert(name.to_string(), entry);
+                    self.store.save(&config)?;
+                    return Ok(InstallOutcome::Changed);
+                }
+                Some(existing) => {
+                    if entries_equal(existing, &entry) {
+                        return Ok(InstallOutcome::NoOp);
+                    }
+                    if !force {
+                        anyhow::bail!(
+                            "Skill '{}' already exists with different configuration. Use update or --force.",
+                            name
+                        );
+                    }
+                    project_override.skill.insert(name.to_string(), entry);
+                    self.store.save(&config)?;
+                    return Ok(InstallOutcome::Changed);
+                }
+            }
+        }
+
         match config.skill.get(name) {
             None => {
                 config.skill.insert(name.to_string(), entry);
@@ -59,6 +88,35 @@ impl InstallService {
         force: bool,
     ) -> anyhow::Result<InstallOutcome> {
         let mut config = self.store.load()?;
+        let scope = self.store.scope();
+        if scope == crate::config::ConfigScope::PerProjectLocal {
+            let project_key = self.store.project_root().to_string_lossy().to_string();
+            let project_override = config.projects.entry(project_key.clone()).or_default();
+            project_override.path = self.store.project_root().to_path_buf();
+
+            match project_override.mcp.get(name) {
+                None => {
+                    project_override.mcp.insert(name.to_string(), entry);
+                    self.store.save(&config)?;
+                    return Ok(InstallOutcome::Changed);
+                }
+                Some(existing) => {
+                    if entries_equal(existing, &entry) {
+                        return Ok(InstallOutcome::NoOp);
+                    }
+                    if !force {
+                        anyhow::bail!(
+                            "MCP '{}' already exists with different configuration. Use update or --force.",
+                            name
+                        );
+                    }
+                    project_override.mcp.insert(name.to_string(), entry);
+                    self.store.save(&config)?;
+                    return Ok(InstallOutcome::Changed);
+                }
+            }
+        }
+
         match config.mcp.get(name) {
             None => {
                 config.mcp.insert(name.to_string(), entry);

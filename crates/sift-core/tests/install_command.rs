@@ -5,6 +5,7 @@ use tempfile::TempDir;
 use sift_core::commands::{InstallCommand, InstallOptions};
 use sift_core::config::ConfigScope;
 use sift_core::fs::LinkMode;
+use toml::Value;
 
 fn setup_isolated_install_command() -> (TempDir, InstallCommand) {
     let temp = TempDir::new().expect("Failed to create temp dir");
@@ -86,6 +87,71 @@ fn install_mcp_writes_lockfile() {
         .expect("MCP server should be locked");
     assert_eq!(locked.constraint, "1.2.3");
     assert_eq!(locked.resolved_version, "todo");
+}
+
+#[test]
+fn install_mcp_auto_scope_writes_project_override_and_local_config() {
+    let (temp, cmd) = setup_isolated_install_command();
+
+    let opts = InstallOptions::mcp("auto-local").with_source("registry:auto-local");
+
+    let report = cmd.execute(&opts).expect("Install should succeed");
+    assert!(report.changed);
+
+    let project_root = temp.path().join("project");
+    let global_config_path = temp.path().join("config").join("sift.toml");
+    assert!(
+        global_config_path.exists(),
+        "Global sift.toml should be created for local scope"
+    );
+
+    let content =
+        std::fs::read_to_string(&global_config_path).expect("Should read global sift.toml");
+    let toml_value: Value = content.parse().expect("Should parse global sift.toml");
+    let projects = toml_value
+        .get("projects")
+        .and_then(|value| value.as_table())
+        .expect("Expected [projects] table in global config");
+
+    let project_key = project_root.to_string_lossy().to_string();
+    let project_entry = projects
+        .get(&project_key)
+        .and_then(|value| value.as_table())
+        .expect("Expected project entry under [projects]");
+    let mcp_entries = project_entry
+        .get("mcp")
+        .and_then(|value| value.as_table())
+        .expect("Expected [projects.<path>.mcp] table");
+    let mcp_entry = mcp_entries
+        .get("auto-local")
+        .and_then(|value| value.as_table())
+        .expect("Expected local MCP entry under [projects.<path>.mcp]");
+    assert_eq!(
+        mcp_entry.get("source").and_then(|value| value.as_str()),
+        Some("registry:auto-local")
+    );
+
+    let project_config_path = project_root.join("sift.toml");
+    if project_config_path.exists() {
+        let project_content =
+            std::fs::read_to_string(&project_config_path).expect("Should read project sift.toml");
+        assert!(
+            !project_content.contains("auto-local"),
+            "Local MCP should not be written to project sift.toml"
+        );
+    }
+
+    let claude_config_path = temp.path().join("home").join(".claude.json");
+    assert!(
+        claude_config_path.exists(),
+        "Local MCP should be written to ~/.claude.json"
+    );
+    let claude_content =
+        std::fs::read_to_string(&claude_config_path).expect("Should read .claude.json");
+    assert!(
+        claude_content.contains("auto-local"),
+        "Claude local MCP config should include auto-local"
+    );
 }
 
 #[test]
