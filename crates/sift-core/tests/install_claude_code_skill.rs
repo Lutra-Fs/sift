@@ -72,6 +72,7 @@ fn install_skill_links_to_project_scope() {
             "resolved-1",
             "latest",
             "registry:test",
+            None,
         )
         .unwrap();
 

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::Context;
 
@@ -20,7 +21,8 @@ use crate::install::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
 };
 use crate::mcp::spec::McpResolvedServer;
-use crate::skills::installer::SkillInstaller;
+use crate::skills::installer::{GitSkillMetadata, SkillInstaller};
+use crate::version::store::LockfileStore;
 
 /// Default runtime for MCP servers when not specified
 const DEFAULT_RUNTIME: &str = "npx";
@@ -423,14 +425,49 @@ impl InstallCommand {
         let client = ClaudeCodeClient::new();
         let ctx = ClientContext::new(self.home_dir.clone(), self.project_root.clone());
 
-        // For now, we'll use a placeholder cache directory
-        // In a real implementation, this would be resolved from the registry
         let cache_dir = self.state_dir.join("cache").join("skills").join(&name);
 
-        // Ensure cache directory exists (for testing - real impl would download)
-        std::fs::create_dir_all(&cache_dir).with_context(|| {
-            format!("Failed to create cache directory: {}", cache_dir.display())
-        })?;
+        let mut git_metadata = None;
+        let mut resolved_version = options
+            .version
+            .clone()
+            .unwrap_or_else(|| DEFAULT_VERSION.to_string());
+        let mut constraint = resolved_version.clone();
+        let mut registry = "default".to_string();
+
+        if is_git_source(&source) {
+            ensure_git_version()?;
+            let spec = parse_git_source(&source)?;
+            let lockfile = LockfileStore::load(
+                Some(self.project_root.clone()),
+                self.state_dir.join("locks"),
+            )?;
+            let existing = lockfile.skills.get(&name);
+            let is_cache_ready = cache_dir.join("SKILL.md").exists();
+
+            let commit = if !options.force && is_cache_ready {
+                if let Some(locked) = existing {
+                    locked.resolved_version.clone()
+                } else {
+                    ensure_git_cache(&cache_dir, &spec, &self.state_dir, options.force)?
+                }
+            } else {
+                ensure_git_cache(&cache_dir, &spec, &self.state_dir, options.force)?
+            };
+
+            resolved_version = commit;
+            constraint = spec.reference.clone().unwrap_or_else(|| "HEAD".to_string());
+            registry = source.clone();
+            git_metadata = Some(GitSkillMetadata {
+                repo: spec.repo.clone(),
+                reference: spec.reference.clone(),
+                subdir: spec.subdir.clone(),
+            });
+        } else {
+            std::fs::create_dir_all(&cache_dir).with_context(|| {
+                format!("Failed to create cache directory: {}", cache_dir.display())
+            })?;
+        }
 
         // Determine scope request
         let scope_request = match options.scope {
@@ -462,12 +499,6 @@ impl InstallCommand {
             self.link_mode,
         );
 
-        // Version for lockfile
-        let version = options
-            .version
-            .clone()
-            .unwrap_or_else(|| DEFAULT_VERSION.to_string());
-
         // Execute installation
         let report = orchestrator.install_skill(
             &client,
@@ -477,9 +508,10 @@ impl InstallCommand {
             &cache_dir,
             resolution,
             options.force,
-            &version,
-            &version,
-            "default",
+            &resolved_version,
+            &constraint,
+            &registry,
+            git_metadata,
         )?;
 
         warnings.extend(report.warnings);
@@ -702,6 +734,7 @@ fn is_local_path(input: &str, project_root: &Path) -> bool {
 fn is_git_like(input: &str) -> bool {
     input.starts_with("http://")
         || input.starts_with("https://")
+        || input.starts_with("git://")
         || input.starts_with("git+")
         || input.starts_with("github:")
         || input.starts_with("git:")
@@ -712,7 +745,11 @@ fn normalize_git_source(input: &str) -> String {
     if let Some(stripped) = input.strip_prefix("git+") {
         return format!("git:{}", stripped);
     }
-    if input.starts_with("http://") || input.starts_with("https://") || input.starts_with("git@") {
+    if input.starts_with("http://")
+        || input.starts_with("https://")
+        || input.starts_with("git://")
+        || input.starts_with("git@")
+    {
         return format!("git:{}", input);
     }
     input.to_string()
@@ -780,6 +817,340 @@ fn resolve_transport(
     } else {
         Ok("stdio".to_string())
     }
+}
+
+#[derive(Debug)]
+struct GitSourceSpec {
+    repo: String,
+    reference: Option<String>,
+    subdir: Option<String>,
+}
+
+fn is_git_source(source: &str) -> bool {
+    source.starts_with("git:") || source.starts_with("github:")
+}
+
+fn ensure_git_version() -> anyhow::Result<()> {
+    let output = Command::new("git")
+        .arg("--version")
+        .output()
+        .context("Failed to invoke git --version")?;
+    if !output.status.success() {
+        anyhow::bail!("Failed to run git --version");
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout
+        .split_whitespace()
+        .nth(2)
+        .ok_or_else(|| anyhow::anyhow!("Unexpected git version output: {}", stdout))?;
+    let mut parts = version.split('.');
+    let major: u32 = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Invalid git version: {}", version))?
+        .parse()?;
+    let minor: u32 = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Invalid git version: {}", version))?
+        .parse()?;
+    if major > 2 || (major == 2 && minor >= 25) {
+        return Ok(());
+    }
+    anyhow::bail!("Git 2.25+ is required for sparse checkout. Please upgrade git.");
+}
+
+fn parse_git_source(source: &str) -> anyhow::Result<GitSourceSpec> {
+    let raw = source.strip_prefix("git:").unwrap_or(source);
+    let raw = if let Some(stripped) = raw.strip_prefix("github:") {
+        format!("https://github.com/{}", stripped)
+    } else {
+        raw.to_string()
+    };
+
+    if let Some((repo, reference, subdir)) = split_tree_path(&raw) {
+        if subdir.is_empty() {
+            anyhow::bail!("Git URL is missing a path after /tree/<ref>/");
+        }
+        return Ok(GitSourceSpec {
+            repo,
+            reference: Some(reference),
+            subdir: Some(subdir),
+        });
+    }
+
+    Ok(GitSourceSpec {
+        repo: raw,
+        reference: None,
+        subdir: None,
+    })
+}
+
+fn split_tree_path(raw: &str) -> Option<(String, String, String)> {
+    let marker = "/tree/";
+    let idx = raw.find(marker)?;
+    let repo = raw[..idx].to_string();
+    let rest = &raw[idx + marker.len()..];
+    let mut parts = rest.splitn(2, '/');
+    let reference = parts.next()?.to_string();
+    let subdir = parts.next().unwrap_or("").to_string();
+    Some((repo, reference, subdir))
+}
+
+fn ensure_git_cache(
+    cache_dir: &Path,
+    spec: &GitSourceSpec,
+    state_dir: &Path,
+    force: bool,
+) -> anyhow::Result<String> {
+    let skill_marker = cache_dir.join("SKILL.md");
+    if cache_dir.exists() && skill_marker.exists() && !force {
+        let bare_dir = ensure_bare_repo(state_dir, spec, false)?;
+        return resolve_git_commit(&bare_dir, spec, false);
+    }
+    if cache_dir.exists() {
+        if force || is_empty_dir(cache_dir)? {
+            std::fs::remove_dir_all(cache_dir).with_context(|| {
+                format!("Failed to remove cache directory: {}", cache_dir.display())
+            })?;
+        } else {
+            anyhow::bail!(
+                "Skill cache exists but is missing SKILL.md: {}. Use --force to refresh.",
+                cache_dir.display()
+            );
+        }
+    }
+
+    let bare_dir = ensure_bare_repo(state_dir, spec, force)?;
+    let commit = resolve_git_commit(&bare_dir, spec, force)?;
+    export_git_subdir(&bare_dir, cache_dir, spec, &commit)?;
+    Ok(commit)
+}
+
+fn ensure_bare_repo(
+    state_dir: &Path,
+    spec: &GitSourceSpec,
+    force: bool,
+) -> anyhow::Result<PathBuf> {
+    let bare_dir = bare_repo_dir(state_dir, &spec.repo);
+    if bare_dir.exists() {
+        if force && spec.reference.is_none() {
+            std::fs::remove_dir_all(&bare_dir)
+                .with_context(|| format!("Failed to remove bare repo: {}", bare_dir.display()))?;
+        } else {
+            return Ok(bare_dir);
+        }
+    }
+
+    std::fs::create_dir_all(
+        bare_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Bare repo directory has no parent"))?,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to create git cache directory: {}",
+            bare_dir.display()
+        )
+    })?;
+    run_git(
+        None,
+        &[
+            "clone",
+            "--filter=blob:none",
+            "--bare",
+            &spec.repo,
+            bare_dir
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid bare repo dir"))?,
+        ],
+    )?;
+    Ok(bare_dir)
+}
+
+fn resolve_git_commit(
+    bare_dir: &Path,
+    spec: &GitSourceSpec,
+    force: bool,
+) -> anyhow::Result<String> {
+    let reference = spec.reference.as_deref().unwrap_or("HEAD");
+    if force && spec.reference.is_some() {
+        run_git(
+            Some(bare_dir),
+            &["fetch", "--filter=blob:none", "origin", reference],
+        )?;
+        return git_rev_parse(Some(bare_dir), "FETCH_HEAD");
+    }
+
+    match git_rev_parse(Some(bare_dir), reference) {
+        Ok(commit) => Ok(commit),
+        Err(err) => {
+            if spec.reference.is_some() {
+                run_git(
+                    Some(bare_dir),
+                    &["fetch", "--filter=blob:none", "origin", reference],
+                )?;
+                git_rev_parse(Some(bare_dir), "FETCH_HEAD")
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+fn export_git_subdir(
+    bare_dir: &Path,
+    cache_dir: &Path,
+    spec: &GitSourceSpec,
+    commit: &str,
+) -> anyhow::Result<()> {
+    let worktree_dir = unique_temp_repo_dir(cache_dir)?;
+    run_git(
+        Some(bare_dir),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            worktree_dir
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid worktree dir"))?,
+            commit,
+        ],
+    )?;
+
+    if let Some(subdir) = &spec.subdir {
+        run_git(Some(&worktree_dir), &["sparse-checkout", "init", "--cone"])?;
+        run_git(Some(&worktree_dir), &["sparse-checkout", "set", subdir])?;
+        run_git(Some(&worktree_dir), &["checkout", commit])?;
+    }
+
+    let src_root = if let Some(subdir) = &spec.subdir {
+        worktree_dir.join(subdir)
+    } else {
+        worktree_dir.clone()
+    };
+    if !src_root.exists() {
+        anyhow::bail!(
+            "Git checkout did not create expected path: {}",
+            src_root.display()
+        );
+    }
+
+    std::fs::create_dir_all(cache_dir)
+        .with_context(|| format!("Failed to create cache directory: {}", cache_dir.display()))?;
+    copy_tree_filtered(&src_root, cache_dir)?;
+
+    run_git(
+        Some(bare_dir),
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            worktree_dir
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid worktree dir"))?,
+        ],
+    )?;
+    let _ = std::fs::remove_dir_all(&worktree_dir);
+    Ok(())
+}
+
+fn run_git(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let output = cmd
+        .output()
+        .with_context(|| format!("Failed to run git {:?}", args))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Git command failed {:?}: {}", args, stderr.trim());
+    }
+    Ok(())
+}
+
+fn git_rev_parse(cwd: Option<&Path>, rev: &str) -> anyhow::Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", rev]);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let output = cmd
+        .output()
+        .with_context(|| format!("Failed to run git rev-parse {}", rev))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git rev-parse {} failed: {}", rev, stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn is_empty_dir(path: &Path) -> anyhow::Result<bool> {
+    let mut entries = std::fs::read_dir(path)
+        .with_context(|| format!("Failed to read directory: {}", path.display()))?;
+    Ok(entries.next().is_none())
+}
+
+fn bare_repo_dir(state_dir: &Path, repo_url: &str) -> PathBuf {
+    let hash = blake3::hash(repo_url.as_bytes()).to_hex().to_string();
+    state_dir.join("git").join(format!("{}.git", hash))
+}
+
+fn unique_temp_repo_dir(state_dir: &Path) -> anyhow::Result<PathBuf> {
+    let worktree_base = state_dir.join("worktrees");
+    std::fs::create_dir_all(&worktree_base).with_context(|| {
+        format!(
+            "Failed to create worktrees directory: {}",
+            worktree_base.display()
+        )
+    })?;
+    for attempt in 0..100 {
+        let thread_id = format!("{:?}", std::thread::current().id());
+        let name = format!("{}.{}.{}", std::process::id(), thread_id, attempt);
+        let candidate = worktree_base.join(name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!(
+        "Failed to allocate a temp worktree directory in {}",
+        worktree_base.display()
+    );
+}
+
+fn copy_tree_filtered(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    for entry in
+        std::fs::read_dir(src).with_context(|| format!("Failed to read dir: {}", src.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("Failed to read dir entry: {}", src.display()))?;
+        let ty = entry
+            .file_type()
+            .with_context(|| format!("Failed to stat dir entry: {}", entry.path().display()))?;
+        let from = entry.path();
+        let file_name = entry.file_name();
+        if file_name == ".git" {
+            continue;
+        }
+        let to = dst.join(&file_name);
+
+        if ty.is_dir() {
+            std::fs::create_dir_all(&to)
+                .with_context(|| format!("Failed to create directory: {}", to.display()))?;
+            copy_tree_filtered(&from, &to)?;
+        } else if ty.is_file() {
+            std::fs::copy(&from, &to).with_context(|| {
+                format!(
+                    "Failed to copy file from {} to {}",
+                    from.display(),
+                    to.display()
+                )
+            })?;
+        } else {
+            anyhow::bail!("Unsupported filesystem entry type at {}", from.display());
+        }
+    }
+    Ok(())
 }
 
 fn parse_key_values(pairs: &[String], label: &str) -> anyhow::Result<HashMap<String, String>> {
@@ -852,6 +1223,24 @@ mod tests {
         assert_eq!(opts.name, "pdf-processing");
         assert_eq!(opts.source, Some("registry:anthropic/pdf".to_string()));
         assert_eq!(opts.version, Some("latest".to_string()));
+    }
+
+    #[test]
+    fn test_unique_temp_repo_dir_allocates_under_worktrees() {
+        // Safe unwrap: tempdir creation failure should fail the test immediately.
+        let temp = TempDir::new().unwrap();
+        let state_dir = temp.path().join("state");
+        // Safe unwrap: test environment expects writable temp dir.
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let candidate = unique_temp_repo_dir(&state_dir).unwrap();
+
+        assert!(
+            candidate.starts_with(state_dir.join("worktrees")),
+            "Expected {:?} under worktrees",
+            candidate
+        );
+        assert!(!candidate.exists());
     }
 
     #[test]

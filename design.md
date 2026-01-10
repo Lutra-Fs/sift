@@ -71,9 +71,9 @@ Sift follows a strict "Do No Harm" policy regarding configuration files.
 3.  **SSE**: Intentionally excluded to keep configuration deterministic.
 
 #### **CLI Explicit Install**
-*   当用户提供 stdio 命令（`--transport stdio -- <command>`）或 HTTP URL（`--transport http --url <url>`）时，Sift 直接写入配置，不再从 registry 解析。
-*   如果同时提供 `--source` 或 `name@version`，CLI 会忽略这些参数并给出警告。
-*   仅提供 `--env`/`--header` 时仍会走 registry 解析逻辑。
+*   When user provides stdio command (`--transport stdio -- <command>`) or HTTP URL (`--transport http --url <url>`), Sift writes configuration directly without registry resolution.
+*   If `--source` or `name@version` is provided simultaneously, CLI will ignore these parameters and issue a warning.
+*   When only `--env`/`--header` are provided, registry resolution logic is still used.
 
 #### **Heterogeneous Runtimes**
 Sift treats runtimes as first-class citizens.
@@ -95,10 +95,11 @@ To avoid polluting the system PATH, Sift enforces cache isolation for runtimes:
     *   **Downgrade Strategy**: If a client lacks capability (e.g., doesn't support symlinks), Sift automatically downgrades: `Symlink → Hardlink → Copy`.
 
 #### **Naming & Source Inference**
-*   **Directory Name as Identity**: Skill 的目录名必须与 `SKILL.md` 的 `name` 一致，因此 CLI 在本地路径安装时直接使用目录名作为 skill name，无需额外读取 `SKILL.md`。
-*   **Local/Git Auto-Detect**: 当用户提供本地路径或 Git URL 时，CLI 会自动推导 `source` 为 `local:` 或 `git:`，不再强制要求 `--source`。
-*   **Registry Disambiguation**: 若多个 registry/marketplace 提供同名 skill 或 MCP，且用户未显式指定 `--source`，CLI 将给出警告并要求用户明确选择。
-*   **Version Declaration**: 仅支持 `name@version` 表达版本约束（不再提供 `--version`），解析后作为 declared version 写入配置。
+*   **Directory Name as Identity**: A skill's directory name must match the `name` in `SKILL.md`, so CLI uses the directory name directly as the skill name when installing from local path, without needing to read `SKILL.md`.
+*   **Local/Git Auto-Detect**: When user provides local path or Git URL, CLI automatically infers `source` as `local:` or `git:`, no longer requiring `--source`.
+*   **Registry Disambiguation**: If multiple registries/marketplaces provide a skill or MCP with the same name and user doesn't explicitly specify `--source`, CLI will warn and require user to make an explicit choice.
+*   **Version Declaration**: Only `name@version` is supported for expressing version constraints (no longer provides `--version`), which is parsed and written to config as declared version.
+*   **Git Requirement**: Installing skills from Git URLs requires Git 2.25+ for sparse checkout.
 
 #### **Lifecycle: Ejection**
 Allows users to modify a managed skill by converting it to a local project file.
@@ -131,7 +132,7 @@ Sift separates **Fetch** (I/O) from **Adapt** (Transform) to handle heterogeneou
 #### **Philosophy: Reproducibility > Freshness**
 *   **Install-Time Snapshot**: `sift add` resolves the **latest** version and **locks** it immediately.
 *   **Explicit Upgrade**: Updates only happen on `sift upgrade`.
-*   **Registry Capabilities**: 由 registry 实现声明是否支持历史版本；不支持时对 `name@version` 给出警告并忽略版本。
+*   **Registry Capabilities**: Registry implementation declares whether it supports historical versions; when not supported, a warning is issued for `name@version` and the version is ignored.
 
 #### **Lockability Matrix**
 | Source | Lockable? | Resolution Strategy |
@@ -216,6 +217,7 @@ Validates the environment:
 1.  **Runtimes**: Checks for `uv`, `node` (suggests `bun` fallback), `docker`.
 2.  **Environment**: WSL checks, permission checks.
 3.  **Connectivity**: Registry reachability.
+4.  **Git**: Validate `git` is installed and version >= 2.25 for Git skill installs.
 
 ### **15. Security & Trust**
 *   **No Sandbox**: Skills run with user privileges.

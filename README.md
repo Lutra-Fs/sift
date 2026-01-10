@@ -39,6 +39,10 @@ Sift handles the complexity of heterogeneous runtimes (Node.js, Bun, Python/uv, 
 *   **Command Generation**: Sift translates these requirements into the correct configuration for the target client (e.g., generating the correct `node` or `uv run` commands in `claude_desktop_config.json`).
 *   **User Override**: Users can always override the execution command in `sift.toml` if specific runtime tweaks are needed.
 
+## Requirements
+
+*   **Git 2.25+**: Required for installing skills from Git URLs (sparse checkout).
+
 ## Usage
 
 The `sift` binary provides multiple interfaces depending on your needs:
@@ -85,3 +89,4 @@ sift export --target vscode
 - [ ] **Manifest**: Define standard schema for MCP/Skill requirements
 - [ ] **Export**: Generators for Claude Desktop & VS Code
 - [ ] **CLI**: Basic install/manage commands
+- [ ] **Git**: Evaluate migration from git CLI to gitoxide for sparse checkout workflows

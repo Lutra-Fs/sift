@@ -73,6 +73,7 @@ fn install_skill_local_git_writes_exclude() {
             "resolved-1",
             "latest",
             "registry:test",
+            None,
         )
         .expect("local install should succeed in git repo");
 

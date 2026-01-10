@@ -11,7 +11,7 @@ use crate::fs::LinkMode;
 use crate::install::git_exclude::ensure_git_exclude;
 use crate::install::scope::ScopeResolution;
 use crate::install::{InstallOutcome, InstallService};
-use crate::skills::installer::{SkillInstallResult, SkillInstaller};
+use crate::skills::installer::{GitSkillMetadata, SkillInstallResult, SkillInstaller};
 use crate::version::lock::LockedMcpServer;
 use crate::version::store::LockfileStore;
 
@@ -164,6 +164,7 @@ impl InstallOrchestrator {
         resolved_version: &str,
         constraint: &str,
         registry: &str,
+        git_metadata: Option<GitSkillMetadata>,
     ) -> anyhow::Result<SkillInstallReport> {
         match resolution {
             ScopeResolution::Skip { warning } => {
@@ -203,6 +204,7 @@ impl InstallOrchestrator {
                     constraint,
                     registry,
                     decision.scope,
+                    git_metadata,
                 )?;
 
                 Ok(SkillInstallReport {

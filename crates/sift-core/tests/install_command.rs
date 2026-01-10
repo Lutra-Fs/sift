@@ -1,6 +1,11 @@
 //! Integration tests for the install command
 
+use std::path::Path;
+use std::process::Command;
+
+use sift_core::version::store::LockfileStore;
 use tempfile::TempDir;
+use url::Url;
 
 use sift_core::commands::{InstallCommand, InstallOptions};
 use sift_core::config::ConfigScope;
@@ -27,6 +32,48 @@ fn setup_isolated_install_command() -> (TempDir, InstallCommand) {
 
 fn write_skill_dir(root: &std::path::Path, relative: &str, name: &str) {
     let skill_dir = root.join(relative);
+    std::fs::create_dir_all(&skill_dir).expect("Failed to create skill dir");
+    let content =
+        format!("---\nname: {name}\ndescription: Test skill\n---\n\nTest instructions.\n");
+    std::fs::write(skill_dir.join("SKILL.md"), content).expect("Failed to write SKILL.md");
+}
+
+fn run_git(repo: &std::path::Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .status()
+        .expect("Failed to invoke git");
+    assert!(status.success(), "git command failed: {:?}", args);
+}
+
+fn git_rev_parse(repo: &Path, rev: &str) -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", rev])
+        .current_dir(repo)
+        .output()
+        .expect("Failed to run git rev-parse");
+    assert!(output.status.success(), "git rev-parse failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn init_git_repo_with_skill(repo: &std::path::Path, skill_rel: &str, name: &str) {
+    std::fs::create_dir_all(repo).expect("Failed to create repo dir");
+    run_git(repo, &["init"]);
+    run_git(repo, &["checkout", "-b", "main"]);
+    run_git(repo, &["config", "user.email", "test@example.com"]);
+    run_git(repo, &["config", "user.name", "Test User"]);
+    run_git(repo, &["config", "commit.gpgsign", "false"]);
+
+    add_skill_to_repo(repo, skill_rel, name);
+    std::fs::write(repo.join("README.md"), "root file").expect("Failed to write README.md");
+
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "init"]);
+}
+
+fn add_skill_to_repo(repo: &std::path::Path, skill_rel: &str, name: &str) {
+    let skill_dir = repo.join(skill_rel);
     std::fs::create_dir_all(&skill_dir).expect("Failed to create skill dir");
     let content =
         format!("---\nname: {name}\ndescription: Test skill\n---\n\nTest instructions.\n");
@@ -483,9 +530,16 @@ fn install_skill_from_local_path_infers_name_and_source() {
 fn install_skill_from_git_url_infers_name_and_source() {
     let (temp, cmd) = setup_isolated_install_command();
     let project_root = temp.path().join("project");
+    let repo_root = temp.path().join("repo");
+    let skill_rel = "skills/gh-fix-ci";
+    init_git_repo_with_skill(&repo_root, skill_rel, "gh-fix-ci");
 
-    let url = "https://github.com/example/skills/tree/main/skills/gh-fix-ci";
-    let opts = InstallOptions::skill(url).with_scope(ConfigScope::PerProjectShared);
+    let file_url = Url::from_directory_path(&repo_root)
+        .expect("repo root should convert to file URL")
+        .to_string();
+    let file_url = file_url.trim_end_matches('/');
+    let url = format!("git+{}/tree/main/{}", file_url, skill_rel);
+    let opts = InstallOptions::skill(url.clone()).with_scope(ConfigScope::PerProjectShared);
 
     let report = cmd.execute(&opts).expect("Install should succeed");
     assert!(report.changed);
@@ -500,7 +554,112 @@ fn install_skill_from_git_url_infers_name_and_source() {
         .skill
         .get("gh-fix-ci")
         .expect("Skill entry should be keyed by URL directory name");
-    assert_eq!(entry.source, format!("git:{url}"));
+    let normalized = url.trim_start_matches("git+");
+    assert_eq!(entry.source, format!("git:{normalized}"));
+}
+
+#[test]
+fn install_skill_from_git_url_materializes_skill_dir() {
+    let (temp, cmd) = setup_isolated_install_command();
+    let project_root = temp.path().join("project");
+    let repo_root = temp.path().join("repo");
+    let skill_rel = "skills/json-canvas";
+
+    init_git_repo_with_skill(&repo_root, skill_rel, "json-canvas");
+
+    let file_url = Url::from_directory_path(&repo_root)
+        .expect("repo root should convert to file URL")
+        .to_string();
+    let file_url = file_url.trim_end_matches('/');
+    let url = format!("git+{}/tree/main/{}", file_url, skill_rel);
+
+    let opts = InstallOptions::skill(url);
+    let report = cmd.execute(&opts).expect("Install should succeed");
+    assert!(report.changed);
+
+    let installed = project_root.join(".claude/skills/json-canvas/SKILL.md");
+    assert!(installed.exists(), "Expected installed SKILL.md to exist");
+}
+
+#[test]
+fn install_skill_from_git_url_records_git_metadata() {
+    let (temp, cmd) = setup_isolated_install_command();
+    let project_root = temp.path().join("project");
+    let repo_root = temp.path().join("repo");
+    let skill_rel = "skills/json-canvas";
+
+    init_git_repo_with_skill(&repo_root, skill_rel, "json-canvas");
+
+    let file_url = Url::from_directory_path(&repo_root)
+        .expect("repo root should convert to file URL")
+        .to_string();
+    let file_url = file_url.trim_end_matches('/');
+    let url = format!("git+{}/tree/main/{}", file_url, skill_rel);
+
+    let opts = InstallOptions::skill(url);
+    let report = cmd.execute(&opts).expect("Install should succeed");
+    assert!(report.changed);
+
+    let lockfile = LockfileStore::load(
+        Some(project_root.clone()),
+        temp.path().join("state").join("locks"),
+    )
+    .expect("Lockfile should load");
+    let locked = lockfile
+        .skills
+        .get("json-canvas")
+        .expect("Skill should be locked");
+    let commit = git_rev_parse(&repo_root, "HEAD");
+    assert_eq!(locked.resolved_version, commit);
+    assert_eq!(locked.git_ref.as_deref(), Some("main"));
+    assert_eq!(locked.git_subdir.as_deref(), Some(skill_rel));
+    assert!(
+        locked
+            .git_repo
+            .as_deref()
+            .unwrap_or_default()
+            .contains("file://")
+    );
+}
+
+#[test]
+fn install_skills_from_same_repo_reuses_bare_repo() {
+    let (temp, cmd) = setup_isolated_install_command();
+    let repo_root = temp.path().join("repo");
+    let skill_a = "skills/a-skill";
+    let skill_b = "skills/b-skill";
+
+    init_git_repo_with_skill(&repo_root, skill_a, "a-skill");
+    add_skill_to_repo(&repo_root, skill_b, "b-skill");
+    run_git(&repo_root, &["add", "."]);
+    run_git(&repo_root, &["commit", "-m", "add b-skill"]);
+
+    let file_url = Url::from_directory_path(&repo_root)
+        .expect("repo root should convert to file URL")
+        .to_string();
+    let file_url = file_url.trim_end_matches('/');
+    let url_a = format!("git+{}/tree/main/{}", file_url, skill_a);
+    let url_b = format!("git+{}/tree/main/{}", file_url, skill_b);
+
+    cmd.execute(&InstallOptions::skill(url_a))
+        .expect("First install should succeed");
+    cmd.execute(&InstallOptions::skill(url_b))
+        .expect("Second install should succeed");
+
+    let git_cache_dir = temp.path().join("state").join("git");
+    let count = std::fs::read_dir(&git_cache_dir)
+        .expect("git cache dir should exist")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with(".git"))
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(count, 1, "Expected a single bare repo cache");
 }
 
 #[test]

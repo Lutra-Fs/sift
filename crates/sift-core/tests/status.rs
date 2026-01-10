@@ -494,9 +494,14 @@ fn aggregated_excludes_not_deployed() {
 #[test]
 fn collect_status_empty_config() {
     let tmp = TempDir::new().expect("Failed to create temp dir");
+    let global_dir = tmp.path().join("global");
+    let state_dir = tmp.path().join("state");
     // No sift.toml, no lockfile
+    std::fs::create_dir_all(&global_dir).expect("Failed to create global dir");
+    std::fs::create_dir_all(&state_dir).expect("Failed to create state dir");
 
-    let status = collect_status(tmp.path(), None, false).expect("collect_status should succeed");
+    let status = collect_status_with_paths(tmp.path(), &global_dir, &state_dir, None, false)
+        .expect("collect_status should succeed");
 
     assert!(status.mcp_servers.is_empty());
     assert!(status.skills.is_empty());
@@ -523,6 +528,10 @@ fn collect_status_defaults_link_mode_to_auto() {
 #[test]
 fn collect_status_detects_not_locked() {
     let tmp = TempDir::new().expect("Failed to create temp dir");
+    let global_dir = tmp.path().join("global");
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&global_dir).expect("Failed to create global dir");
+    std::fs::create_dir_all(&state_dir).expect("Failed to create state dir");
 
     // Create sift.toml with a skill
     let sift_toml = r#"
@@ -533,7 +542,8 @@ version = "^1.0"
     std::fs::write(tmp.path().join("sift.toml"), sift_toml).expect("Failed to write sift.toml");
     // No lockfile
 
-    let status = collect_status(tmp.path(), None, false).expect("collect_status should succeed");
+    let status = collect_status_with_paths(tmp.path(), &global_dir, &state_dir, None, false)
+        .expect("collect_status should succeed");
 
     assert_eq!(status.skills.len(), 1);
     assert_eq!(status.skills[0].state, EntryState::NotLocked);
@@ -1149,6 +1159,10 @@ fn collect_status_includes_resolved_version() {
 #[test]
 fn collect_status_verify_collects_deployments() {
     let tmp = TempDir::new().expect("Failed to create temp dir");
+    let global_dir = tmp.path().join("global");
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&global_dir).expect("Failed to create global dir");
+    std::fs::create_dir_all(&state_dir).expect("Failed to create state dir");
 
     // Create sift.toml with MCP
     let sift_toml = r#"
@@ -1160,7 +1174,8 @@ transport = "stdio"
     std::fs::write(tmp.path().join("sift.toml"), sift_toml).expect("Failed to write sift.toml");
 
     // Run collect_status with verify=true
-    let status = collect_status(tmp.path(), None, true).expect("collect_status should succeed");
+    let status = collect_status_with_paths(tmp.path(), &global_dir, &state_dir, None, true)
+        .expect("collect_status should succeed");
 
     // Should have MCP server
     assert_eq!(status.mcp_servers.len(), 1);
@@ -1184,6 +1199,10 @@ transport = "stdio"
 #[test]
 fn collect_status_no_verify_skips_deployments() {
     let tmp = TempDir::new().expect("Failed to create temp dir");
+    let global_dir = tmp.path().join("global");
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&global_dir).expect("Failed to create global dir");
+    std::fs::create_dir_all(&state_dir).expect("Failed to create state dir");
 
     // Create sift.toml with MCP
     let sift_toml = r#"
@@ -1195,7 +1214,8 @@ transport = "stdio"
     std::fs::write(tmp.path().join("sift.toml"), sift_toml).expect("Failed to write sift.toml");
 
     // Run collect_status with verify=false
-    let status = collect_status(tmp.path(), None, false).expect("collect_status should succeed");
+    let status = collect_status_with_paths(tmp.path(), &global_dir, &state_dir, None, false)
+        .expect("collect_status should succeed");
 
     // Should have MCP server
     assert_eq!(status.mcp_servers.len(), 1);

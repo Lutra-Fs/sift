@@ -15,6 +15,13 @@ pub struct SkillInstallResult {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct GitSkillMetadata {
+    pub repo: String,
+    pub reference: Option<String>,
+    pub subdir: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct SkillInstaller {
     store_dir: PathBuf,
@@ -42,15 +49,20 @@ impl SkillInstaller {
         constraint: &str,
         registry: &str,
         scope: ConfigScope,
+        git_metadata: Option<GitSkillMetadata>,
     ) -> anyhow::Result<SkillInstallResult> {
         let cache_hash = hash_tree(cache_dir)
             .with_context(|| format!("Failed to hash cache: {}", cache_dir.display()))?;
 
         let mut lockfile = LockfileStore::load(self.project_root.clone(), self.store_dir.clone())?;
         let existing = lockfile.get_skill(name);
-        let expected_hash = existing
-            .and_then(|locked| locked.tree_hash.as_deref())
-            .unwrap_or(&cache_hash);
+        let expected_hash = if force {
+            &cache_hash
+        } else {
+            existing
+                .and_then(|locked| locked.tree_hash.as_deref())
+                .unwrap_or(&cache_hash)
+        };
 
         let options = LinkerOptions {
             mode,
@@ -60,7 +72,7 @@ impl SkillInstaller {
 
         let report = deliver_dir_managed(cache_dir, dst_dir, &options, existing, expected_hash)?;
 
-        let locked = LockedSkill::new(
+        let mut locked = LockedSkill::new(
             name.to_string(),
             resolved_version.to_string(),
             constraint.to_string(),
@@ -73,6 +85,9 @@ impl SkillInstaller {
             report.mode,
             cache_hash,
         );
+        if let Some(metadata) = git_metadata {
+            locked = locked.with_git_metadata(metadata.repo, metadata.reference, metadata.subdir);
+        }
 
         lockfile.add_skill(name.to_string(), locked);
         LockfileStore::save(self.project_root.clone(), self.store_dir.clone(), &lockfile)?;
