@@ -19,6 +19,12 @@ use crate::install::scope::ScopeRequest;
 use crate::mcp::spec::McpResolvedServer;
 use crate::skills::installer::SkillInstaller;
 
+/// Default runtime for MCP servers when not specified
+const DEFAULT_RUNTIME: &str = "npx";
+
+/// Default version constraint when not specified
+const DEFAULT_VERSION: &str = "latest";
+
 /// What to install: MCP server or skill
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallTarget {
@@ -141,7 +147,7 @@ impl InstallCommand {
         state_dir: PathBuf,
         link_mode: LinkMode,
     ) -> Self {
-        // For backwards compatibility, derive global_config_dir from defaults
+        // Derive global_config_dir from system defaults when not explicitly provided
         let global_config_dir = dirs::config_dir()
             .map(|p| p.join("sift"))
             .unwrap_or_else(|| home_dir.join(".config").join("sift"));
@@ -323,7 +329,7 @@ impl InstallCommand {
         };
 
         // Version for lockfile
-        let version = options.version.clone().unwrap_or_else(|| "latest".to_string());
+        let version = options.version.clone().unwrap_or_else(|| DEFAULT_VERSION.to_string());
 
         // Execute installation
         let report = orchestrator.install_skill(
@@ -379,12 +385,12 @@ impl InstallCommand {
     ) -> anyhow::Result<Vec<McpResolvedServer>> {
         // Build a resolved server spec from the entry
         // In a full implementation, this would resolve the package from the registry
-        let runtime = entry.runtime.as_deref().unwrap_or("npx");
+        let runtime = entry.runtime.as_deref().unwrap_or(DEFAULT_RUNTIME);
         let command = runtime.to_string();
 
         // For registry sources, the args would be resolved from the registry
         // For now, we use a placeholder
-        let mut args = vec![format!("{}@latest", name)];
+        let mut args = vec![format!("{}@{}", name, DEFAULT_VERSION)];
         args.extend(entry.args.clone());
 
         Ok(vec![McpResolvedServer::stdio(
