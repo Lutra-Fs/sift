@@ -2,6 +2,7 @@
 //!
 //! Implements snapshot-based version locking for reproducibility
 
+use crate::config::ConfigScope;
 use crate::fs::LinkMode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -103,6 +104,9 @@ pub struct LockedMcpServer {
     /// Registry source
     pub registry: String,
 
+    /// Configuration scope where this entry was installed from
+    pub scope: ConfigScope,
+
     /// Checksum for verification (optional)
     pub checksum: Option<String>,
 }
@@ -114,12 +118,14 @@ impl LockedMcpServer {
         resolved_version: String,
         constraint: String,
         registry: String,
+        scope: ConfigScope,
     ) -> Self {
         Self {
             name,
             resolved_version,
             constraint,
             registry,
+            scope,
             checksum: None,
         }
     }
@@ -148,6 +154,9 @@ pub struct LockedSkill {
 
     /// Registry source
     pub registry: String,
+
+    /// Configuration scope where this entry was installed from
+    pub scope: ConfigScope,
 
     /// Checksum for verification (optional)
     pub checksum: Option<String>,
@@ -180,12 +189,14 @@ impl LockedSkill {
         resolved_version: String,
         constraint: String,
         registry: String,
+        scope: ConfigScope,
     ) -> Self {
         Self {
             name,
             resolved_version,
             constraint,
             registry,
+            scope,
             checksum: None,
             dst_path: None,
             cache_src_path: None,
@@ -472,6 +483,7 @@ mod tests {
             "1.2.3".to_string(),
             "^1.0".to_string(),
             "registry:official".to_string(),
+            ConfigScope::Global,
         );
 
         lockfile.add_mcp_server("test-mcp".to_string(), server.clone());
@@ -488,6 +500,7 @@ mod tests {
             "1.0.0".to_string(),
             "latest".to_string(),
             "registry:official".to_string(),
+            ConfigScope::Global,
         )
         .with_checksum("abc123".to_string());
 
@@ -501,10 +514,12 @@ mod tests {
             "1.0.0".to_string(),
             "latest".to_string(),
             "registry:official".to_string(),
+            ConfigScope::Global,
         );
 
         assert_eq!(skill.name, "test-skill");
         assert_eq!(skill.resolved_version, "1.0.0");
+        assert_eq!(skill.scope, ConfigScope::Global);
         assert!(!skill.is_installed());
         assert!(skill.dst_path.is_none());
         assert!(skill.tree_hash.is_none());
@@ -517,6 +532,7 @@ mod tests {
             "1.0.0".to_string(),
             "latest".to_string(),
             "registry:official".to_string(),
+            ConfigScope::PerProjectShared,
         )
         .with_install_state(
             PathBuf::from("/dst/skill"),
@@ -539,6 +555,7 @@ mod tests {
             "1.0.0".to_string(),
             "latest".to_string(),
             "registry:official".to_string(),
+            ConfigScope::Global,
         );
 
         lockfile.add_skill("test-skill".to_string(), skill);

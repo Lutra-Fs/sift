@@ -163,6 +163,7 @@ impl InstallOrchestrator {
                     resolved_version,
                     constraint,
                     registry,
+                    decision.scope,
                 )?;
 
                 Ok(SkillInstallReport {

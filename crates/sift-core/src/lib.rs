@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod registry;
 pub mod runtime;
 pub mod skills;
+pub mod status;
 pub mod version;
 
 /// Re-exports of commonly used types

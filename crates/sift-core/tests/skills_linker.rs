@@ -3,6 +3,7 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
+use sift_core::config::ConfigScope;
 use sift_core::fs::tree_hash::hash_tree;
 use sift_core::skills::linker::{LinkMode, LinkerOptions, deliver_dir_managed};
 use sift_core::version::LockedSkill;
@@ -38,6 +39,7 @@ fn make_locked_skill_with_hash(
         "1.0.0".to_string(),
         "latest".to_string(),
         "registry:official".to_string(),
+        ConfigScope::Global,
     )
     .with_install_state(
         dst.to_path_buf(),

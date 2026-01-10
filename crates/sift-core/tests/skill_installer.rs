@@ -1,6 +1,7 @@
 use std::fs;
 use tempfile::TempDir;
 
+use sift_core::config::ConfigScope;
 use sift_core::fs::LinkMode;
 use sift_core::skills::installer::SkillInstaller;
 use sift_core::version::store::LockfileStore;
@@ -31,6 +32,7 @@ fn install_skill_updates_lockfile_and_delivery() {
             "resolved-1",
             "latest",
             "registry:test",
+            ConfigScope::Global,
         )
         .unwrap();
 

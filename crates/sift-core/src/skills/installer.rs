@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+use crate::config::ConfigScope;
 use crate::fs::{LinkMode, hash_tree};
 use crate::skills::linker::{LinkerOptions, deliver_dir_managed};
 use crate::version::lock::LockedSkill;
@@ -40,6 +41,7 @@ impl SkillInstaller {
         resolved_version: &str,
         constraint: &str,
         registry: &str,
+        scope: ConfigScope,
     ) -> anyhow::Result<SkillInstallResult> {
         let cache_hash = hash_tree(cache_dir)
             .with_context(|| format!("Failed to hash cache: {}", cache_dir.display()))?;
@@ -63,6 +65,7 @@ impl SkillInstaller {
             resolved_version.to_string(),
             constraint.to_string(),
             registry.to_string(),
+            scope,
         )
         .with_install_state(
             dst_dir.to_path_buf(),

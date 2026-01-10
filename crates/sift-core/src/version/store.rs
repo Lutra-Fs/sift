@@ -171,12 +171,14 @@ mod tests {
         fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
 
         let mut lockfile = Lockfile::new();
+        use crate::config::ConfigScope;
         use crate::version::lock::LockedMcpServer;
         let server = LockedMcpServer::new(
             "test-server".to_string(),
             "1.0.0".to_string(),
             "^1.0".to_string(),
             "registry:official".to_string(),
+            ConfigScope::Global,
         );
         lockfile.add_mcp_server("test".to_string(), server);
 
