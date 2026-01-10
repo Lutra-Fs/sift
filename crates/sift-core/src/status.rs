@@ -761,7 +761,7 @@ pub fn collect_status_with_paths(
     Ok(SystemStatus {
         project_root: Some(project_root.to_path_buf()),
         scope_filter,
-        link_mode: merged_config.link_mode.unwrap_or(LinkMode::Symlink),
+        link_mode: merged_config.link_mode.unwrap_or(LinkMode::Auto),
         mcp_servers,
         skills,
         clients: client_statuses,

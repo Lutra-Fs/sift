@@ -14,6 +14,8 @@ use crate::install::scope::{
 };
 use crate::install::{InstallOutcome, InstallService};
 use crate::skills::installer::{SkillInstallResult, SkillInstaller};
+use crate::version::lock::LockedMcpServer;
+use crate::version::store::LockfileStore;
 
 #[derive(Debug, Clone)]
 pub struct InstallReport {
@@ -29,6 +31,7 @@ pub struct InstallMcpRequest<'a> {
     pub servers: &'a [crate::mcp::spec::McpResolvedServer],
     pub request: ScopeRequest,
     pub force: bool,
+    pub declared_version: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -78,7 +81,9 @@ impl InstallOrchestrator {
 
         match resolution {
             ScopeResolution::Skip { warning } => {
+                let entry = req.entry.clone();
                 let outcome = self.install.install_mcp(req.name, req.entry, req.force)?;
+                self.update_mcp_lockfile(ctx, req.name, &entry, req.declared_version)?;
                 Ok(InstallReport {
                     outcome,
                     warnings: vec![warning],
@@ -86,6 +91,7 @@ impl InstallOrchestrator {
                 })
             }
             ScopeResolution::Apply(decision) => {
+                let entry = req.entry.clone();
                 let outcome = self.install.install_mcp(req.name, req.entry, req.force)?;
                 let plan = client.plan_mcp(ctx, decision.scope, req.servers)?;
                 let config_path = resolve_plan_path(ctx, plan.root, &plan.relative_path)?;
@@ -98,6 +104,7 @@ impl InstallOrchestrator {
                     req.force,
                 )
                 .with_context(|| format!("Failed to apply MCP config for {}", req.name))?;
+                self.update_mcp_lockfile(ctx, req.name, &entry, req.declared_version)?;
 
                 Ok(InstallReport {
                     outcome,
@@ -106,6 +113,48 @@ impl InstallOrchestrator {
                 })
             }
         }
+    }
+
+    fn update_mcp_lockfile(
+        &self,
+        ctx: &ClientContext,
+        name: &str,
+        entry: &McpConfigEntry,
+        declared_version: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let store_dir = self.ownership_store.store_dir().to_path_buf();
+        let project_root = self
+            .ownership_store
+            .project_root()
+            .cloned()
+            .unwrap_or_else(|| ctx.project_root.clone());
+        let project_root = Some(project_root);
+        let mut lockfile = LockfileStore::load(project_root.clone(), store_dir.clone())?;
+
+        let is_registry = entry.source.starts_with("registry:");
+        let constraint = if is_registry {
+            declared_version.unwrap_or("latest")
+        } else {
+            "unmanaged"
+        };
+        let resolved_version = if is_registry { "todo" } else { "unmanaged" };
+        let registry = if is_registry {
+            entry.source.clone()
+        } else {
+            "local".to_string()
+        };
+
+        let locked = LockedMcpServer::new(
+            name.to_string(),
+            resolved_version.to_string(),
+            constraint.to_string(),
+            registry,
+            self.install.config_store().scope(),
+        );
+
+        lockfile.add_mcp_server(name.to_string(), locked);
+        LockfileStore::save(project_root, store_dir, &lockfile)?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -21,6 +21,14 @@ impl OwnershipStore {
         }
     }
 
+    pub fn store_dir(&self) -> &Path {
+        &self.store_dir
+    }
+
+    pub fn project_root(&self) -> Option<&PathBuf> {
+        self.project_root.as_ref()
+    }
+
     pub fn load(&self, config_path: &Path) -> anyhow::Result<HashMap<String, String>> {
         self.load_for_field_key(config_path, None)
     }

@@ -72,6 +72,7 @@ fn install_mcp_updates_config_and_writes_project_file() {
                 servers: &servers,
                 request: ScopeRequest::Explicit(ConfigScope::PerProjectShared),
                 force: false,
+                declared_version: None,
             },
         )
         .unwrap();

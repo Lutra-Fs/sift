@@ -15,3 +15,9 @@ pub use adapter::{
 
 pub use github_fetcher::GitHubFetcher;
 pub use merge_nested::merge_plugin_with_nested;
+
+pub fn capabilities() -> crate::registry::RegistryCapabilities {
+    crate::registry::RegistryCapabilities {
+        supports_version_pinning: false,
+    }
+}

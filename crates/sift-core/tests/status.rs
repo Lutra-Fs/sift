@@ -503,6 +503,22 @@ fn collect_status_empty_config() {
     assert_eq!(status.summary.issues, 0);
 }
 
+/// Test: collect_status defaults link_mode to Auto when unset
+#[test]
+fn collect_status_defaults_link_mode_to_auto() {
+    let tmp = TempDir::new().expect("Failed to create temp dir");
+    let global_dir = tmp.path().join("global");
+    let state_dir = tmp.path().join("state");
+
+    std::fs::create_dir_all(&global_dir).expect("Failed to create global dir");
+    std::fs::create_dir_all(&state_dir).expect("Failed to create state dir");
+
+    let status = collect_status_with_paths(tmp.path(), &global_dir, &state_dir, None, false)
+        .expect("collect_status should succeed");
+
+    assert_eq!(status.link_mode, LinkMode::Auto);
+}
+
 /// Test: collect_status finds NotLocked entries
 #[test]
 fn collect_status_detects_not_locked() {
