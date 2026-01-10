@@ -4,6 +4,7 @@
 //! with support for multiple configuration scopes and clients.
 
 pub mod client;
+pub mod commands;
 pub mod config;
 pub mod fs;
 pub mod install;
@@ -16,6 +17,9 @@ pub mod version;
 
 /// Re-exports of commonly used types
 pub mod prelude {
+    // Commands
+    pub use crate::commands::{InstallCommand, InstallOptions, InstallReport, InstallTarget};
+
     // Configuration
     pub use crate::config::{
         ClientConfigEntry, ConfigManager, ConfigScope, McpConfigEntry, ProjectOverride, SiftConfig,

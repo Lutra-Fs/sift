@@ -10,6 +10,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use sift_core::commands::{InstallCommand, InstallOptions, InstallTarget};
 use sift_core::config::ConfigScope;
 use sift_core::status::{EntryState, McpServerStatus, SkillStatus, SystemStatus, collect_status};
 
@@ -56,6 +57,21 @@ enum Commands {
         kind: String,
         /// Name/ID of the package to install
         name: String,
+        /// Source specification (e.g., "registry:name" or "local:/path")
+        #[arg(long, short)]
+        source: Option<String>,
+        /// Version constraint
+        #[arg(long, short = 'V')]
+        version: Option<String>,
+        /// Configuration scope (global, shared, local)
+        #[arg(long)]
+        scope: Option<String>,
+        /// Force overwrite existing entries
+        #[arg(long, short)]
+        force: bool,
+        /// Runtime type for MCP servers (node, bun, docker, etc.)
+        #[arg(long, short)]
+        runtime: Option<String>,
     },
 
     /// Uninstall an MCP server or skill
@@ -125,8 +141,16 @@ fn run_cli(command: Commands) -> Result<()> {
         } => {
             run_status(scope, global, verify, format, verbose)?;
         }
-        Commands::Install { kind, name } => {
-            println!("Installing {kind}: {name}");
+        Commands::Install {
+            kind,
+            name,
+            source,
+            version,
+            scope,
+            force,
+            runtime,
+        } => {
+            run_install(&kind, &name, source, version, scope, force, runtime)?;
         }
         Commands::Uninstall { kind, name } => {
             println!("Uninstalling {kind}: {name}");
@@ -140,6 +164,73 @@ fn run_cli(command: Commands) -> Result<()> {
             println!("Setting config scope to: {scope}");
         }
     }
+    Ok(())
+}
+
+fn run_install(
+    kind: &str,
+    name: &str,
+    source: Option<String>,
+    version: Option<String>,
+    scope: Option<String>,
+    force: bool,
+    runtime: Option<String>,
+) -> Result<()> {
+    // Parse target type
+    let target = match kind.to_lowercase().as_str() {
+        "mcp" => InstallTarget::Mcp,
+        "skill" => InstallTarget::Skill,
+        _ => anyhow::bail!("Unknown install type: {}. Use 'mcp' or 'skill'", kind),
+    };
+
+    // Parse scope if provided
+    let config_scope = if let Some(s) = scope {
+        Some(parse_scope(&s)?)
+    } else {
+        None
+    };
+
+    // Build options
+    let mut options = match target {
+        InstallTarget::Mcp => InstallOptions::mcp(name),
+        InstallTarget::Skill => InstallOptions::skill(name),
+    };
+
+    if let Some(s) = source {
+        options = options.with_source(s);
+    }
+    if let Some(v) = version {
+        options = options.with_version(v);
+    }
+    if let Some(s) = config_scope {
+        options = options.with_scope(s);
+    }
+    if force {
+        options = options.with_force(true);
+    }
+    if let Some(r) = runtime {
+        options = options.with_runtime(r);
+    }
+
+    // Create and execute install command
+    let cmd = InstallCommand::with_defaults()?;
+    let report = cmd.execute(&options)?;
+
+    // Print result
+    if report.changed {
+        println!("✓ Installed {} '{}'", kind, report.name);
+    } else {
+        println!("• {} '{}' is already installed", kind, report.name);
+    }
+
+    if report.applied {
+        println!("  Applied to client configurations");
+    }
+
+    for warning in &report.warnings {
+        println!("  ⚠ {}", warning);
+    }
+
     Ok(())
 }
 
