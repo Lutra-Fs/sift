@@ -7,7 +7,7 @@
 //!   sift --gui        # Launch GUI
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use sift_core::commands::{InstallCommand, InstallOptions, InstallTarget};
@@ -52,39 +52,7 @@ enum Commands {
     },
 
     /// Install an MCP server or skill
-    Install {
-        /// What to install (mcp or skill)
-        kind: String,
-        /// Name/ID of the package to install
-        name: String,
-        /// Source specification (e.g., "registry:name" or "local:/path")
-        #[arg(long, short)]
-        source: Option<String>,
-        /// Configuration scope (global, shared, local)
-        #[arg(long)]
-        scope: Option<String>,
-        /// Force overwrite existing entries
-        #[arg(long, short)]
-        force: bool,
-        /// Runtime type for MCP servers (node, bun, docker, etc.)
-        #[arg(long, short)]
-        runtime: Option<String>,
-        /// Transport type for MCP servers (stdio or http)
-        #[arg(long)]
-        transport: Option<String>,
-        /// HTTP URL for MCP servers
-        #[arg(long)]
-        url: Option<String>,
-        /// Environment variable for MCP servers (KEY=VALUE)
-        #[arg(long, value_name = "KEY=VALUE")]
-        env: Vec<String>,
-        /// HTTP header for MCP servers (KEY=VALUE)
-        #[arg(long, value_name = "KEY=VALUE")]
-        header: Vec<String>,
-        /// Stdio command for MCP servers (after --)
-        #[arg(last = true)]
-        command: Vec<String>,
-    },
+    Install(Box<InstallArgs>),
 
     /// Uninstall an MCP server or skill
     Uninstall {
@@ -153,32 +121,8 @@ fn run_cli(command: Commands) -> Result<()> {
         } => {
             run_status(scope, global, verify, format, verbose)?;
         }
-        Commands::Install {
-            kind,
-            name,
-            source,
-            scope,
-            force,
-            runtime,
-            transport,
-            url,
-            env,
-            header,
-            command,
-        } => {
-            run_install(InstallArgs {
-                kind,
-                name,
-                source,
-                scope,
-                force,
-                runtime,
-                transport,
-                url,
-                env,
-                headers: header,
-                command,
-            })?;
+        Commands::Install(args) => {
+            run_install(*args)?;
         }
         Commands::Uninstall { kind, name } => {
             println!("Uninstalling {kind}: {name}");
@@ -195,17 +139,41 @@ fn run_cli(command: Commands) -> Result<()> {
     Ok(())
 }
 
+#[derive(Args)]
 struct InstallArgs {
+    /// What to install (mcp or skill)
     kind: String,
+    /// Name/ID of the package to install
     name: String,
+    /// Source specification (e.g., "registry:name" or "local:/path")
+    #[arg(long, short)]
     source: Option<String>,
+    /// Registry name to disambiguate when multiple registries exist
+    #[arg(long)]
+    registry: Option<String>,
+    /// Configuration scope (global, shared, local)
+    #[arg(long)]
     scope: Option<String>,
+    /// Force overwrite existing entries
+    #[arg(long, short)]
     force: bool,
+    /// Runtime type for MCP servers (node, bun, docker, etc.)
+    #[arg(long, short)]
     runtime: Option<String>,
+    /// Transport type for MCP servers (stdio or http)
+    #[arg(long)]
     transport: Option<String>,
+    /// HTTP URL for MCP servers
+    #[arg(long)]
     url: Option<String>,
+    /// Environment variable for MCP servers (KEY=VALUE)
+    #[arg(long, value_name = "KEY=VALUE")]
     env: Vec<String>,
+    /// HTTP header for MCP servers (KEY=VALUE)
+    #[arg(long = "header", value_name = "KEY=VALUE")]
     headers: Vec<String>,
+    /// Stdio command for MCP servers (after --)
+    #[arg(last = true)]
     command: Vec<String>,
 }
 
@@ -233,6 +201,9 @@ fn run_install(args: InstallArgs) -> Result<()> {
 
     if let Some(s) = &args.source {
         options = options.with_source(s);
+    }
+    if let Some(registry) = &args.registry {
+        options = options.with_registry(registry);
     }
     if let Some(v) = parsed_version {
         options = options.with_version(v);
@@ -692,6 +663,22 @@ mod tests {
             "http",
             "--url",
             "https://mcp.example.com",
+        ];
+
+        let result = std::panic::catch_unwind(|| Cli::try_parse_from(args));
+        assert!(result.is_ok(), "CLI parsing should not panic");
+        assert!(result.unwrap().is_ok(), "CLI parsing should succeed");
+    }
+
+    #[test]
+    fn install_with_registry_parses_without_panic() {
+        let args = [
+            "sift",
+            "install",
+            "skill",
+            "demo-skill",
+            "--registry",
+            "official",
         ];
 
         let result = std::panic::catch_unwind(|| Cli::try_parse_from(args));

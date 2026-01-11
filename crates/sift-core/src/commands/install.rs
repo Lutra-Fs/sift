@@ -47,6 +47,8 @@ pub struct InstallOptions {
     pub name: String,
     /// Source specification (e.g., "registry:name" or "local:/path")
     pub source: Option<String>,
+    /// Registry name for disambiguation
+    pub registry: Option<String>,
     /// Version constraint
     pub version: Option<String>,
     /// Configuration scope
@@ -74,6 +76,7 @@ impl InstallOptions {
             target: InstallTarget::Mcp,
             name: name.into(),
             source: None,
+            registry: None,
             version: None,
             scope: None,
             force: false,
@@ -92,6 +95,7 @@ impl InstallOptions {
             target: InstallTarget::Skill,
             name: name.into(),
             source: None,
+            registry: None,
             version: None,
             scope: None,
             force: false,
@@ -107,6 +111,12 @@ impl InstallOptions {
     /// Set the source specification
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
+        self
+    }
+
+    /// Set the registry name for disambiguation
+    pub fn with_registry(mut self, registry: impl Into<String>) -> Self {
+        self.registry = Some(registry.into());
         self
     }
 
@@ -323,6 +333,19 @@ impl InstallCommand {
                         .to_string(),
                 );
             }
+            if options.registry.is_some() {
+                warnings.push(
+                    "Ignoring --registry because an explicit command or URL was provided."
+                        .to_string(),
+                );
+            }
+            if options.runtime.is_some() {
+                warnings.push(
+                    "Ignoring --runtime because an explicit command or URL was provided."
+                        .to_string(),
+                );
+                runtime = None;
+            }
             if version.is_some() {
                 warnings.push(
                     "Ignoring version because an explicit command or URL was provided.".to_string(),
@@ -341,10 +364,21 @@ impl InstallCommand {
                 format!("local:{}", name)
             }
         } else {
-            let (resolved_name, resolved_source, source_is_registry, source_explicit) =
-                self.resolve_name_and_source(&options.name, options.source.as_deref())?;
+            let resolved = self.resolve_name_and_source(
+                &options.name,
+                options.source.as_deref(),
+                options.registry.as_deref(),
+            )?;
+            let ResolvedNameAndSource {
+                name: resolved_name,
+                source: resolved_source,
+                source_is_registry,
+                source_explicit,
+                warnings: resolved_warnings,
+            } = resolved;
             name = resolved_name;
-            warnings = self.registry_warnings(source_is_registry, source_explicit)?;
+            warnings.extend(resolved_warnings);
+            warnings.extend(self.registry_warnings(source_is_registry, source_explicit)?);
             if source_is_registry
                 && version.is_some()
                 && let Some(false) = self.registry_supports_version_pinning(&resolved_source)?
@@ -437,9 +471,21 @@ impl InstallCommand {
     /// Install a skill
     fn install_skill(&self, options: &InstallOptions) -> anyhow::Result<InstallReport> {
         // Build config entry
-        let (name, source, source_is_registry, source_explicit) =
-            self.resolve_name_and_source(&options.name, options.source.as_deref())?;
-        let mut warnings = self.registry_warnings(source_is_registry, source_explicit)?;
+        let resolved = self.resolve_name_and_source(
+            &options.name,
+            options.source.as_deref(),
+            options.registry.as_deref(),
+        )?;
+        let ResolvedNameAndSource {
+            name,
+            source,
+            source_is_registry,
+            source_explicit,
+            warnings: resolved_warnings,
+        } = resolved;
+        let mut warnings = Vec::new();
+        warnings.extend(resolved_warnings);
+        warnings.extend(self.registry_warnings(source_is_registry, source_explicit)?);
 
         let entry = SkillConfigEntry {
             source: source.clone(),
@@ -683,26 +729,49 @@ impl InstallCommand {
         &self,
         input: &str,
         source: Option<&str>,
-    ) -> anyhow::Result<(String, String, bool, bool)> {
+        registry: Option<&str>,
+    ) -> anyhow::Result<ResolvedNameAndSource> {
+        let mut warnings = Vec::new();
+
         if let Some(explicit) = source {
-            let is_registry = explicit.starts_with("registry:");
-            return Ok((input.to_string(), explicit.to_string(), is_registry, true));
+            let (normalized, normalized_warning) = self.normalize_explicit_source(explicit)?;
+            if let Some(warning) = normalized_warning {
+                warnings.push(warning);
+            }
+            if registry.is_some() {
+                warnings.push("Ignoring --registry because --source was provided.".to_string());
+            }
+            let is_registry = normalized.starts_with("registry:");
+            return Ok(ResolvedNameAndSource {
+                name: input.to_string(),
+                source: normalized,
+                source_is_registry: is_registry,
+                source_explicit: true,
+                warnings,
+            });
         }
 
         if let Some(inferred) = self.infer_local_source(input) {
-            return Ok((inferred.name, inferred.source, false, false));
+            return Ok(inferred);
         }
 
         if let Some(inferred) = self.infer_git_source(input) {
-            return Ok((inferred.name, inferred.source, false, false));
+            return Ok(inferred);
         }
 
-        Ok((
-            input.to_string(),
-            format!("registry:{}", input),
-            true,
-            false,
-        ))
+        let source = if let Some(selected) = registry {
+            format!("registry:{}/{}", selected, input)
+        } else {
+            format!("registry:{}", input)
+        };
+
+        Ok(ResolvedNameAndSource {
+            name: input.to_string(),
+            source,
+            source_is_registry: true,
+            source_explicit: registry.is_some(),
+            warnings,
+        })
     }
 
     fn infer_local_source(&self, input: &str) -> Option<ResolvedNameAndSource> {
@@ -713,6 +782,9 @@ impl InstallCommand {
         Some(ResolvedNameAndSource {
             name,
             source: format!("local:{}", input),
+            source_is_registry: false,
+            source_explicit: false,
+            warnings: Vec::new(),
         })
     }
 
@@ -722,7 +794,49 @@ impl InstallCommand {
         }
         let source = normalize_git_source(input);
         let name = derive_name_from_git_source(&source).ok()?;
-        Some(ResolvedNameAndSource { name, source })
+        Some(ResolvedNameAndSource {
+            name,
+            source,
+            source_is_registry: false,
+            source_explicit: false,
+            warnings: Vec::new(),
+        })
+    }
+
+    fn normalize_explicit_source(&self, source: &str) -> anyhow::Result<(String, Option<String>)> {
+        if source.starts_with("registry:")
+            || source.starts_with("local:")
+            || source.starts_with("github:")
+            || source.starts_with("git:")
+        {
+            return Ok((source.to_string(), None));
+        }
+
+        if is_local_path(source, &self.project_root) {
+            let normalized = format!("local:{}", source);
+            return Ok((
+                normalized.clone(),
+                Some(format!(
+                    "Normalized source '{}' to '{}'.",
+                    source, normalized
+                )),
+            ));
+        }
+
+        if is_git_like(source) {
+            let normalized = normalize_git_source(source);
+            return Ok((
+                normalized.clone(),
+                Some(format!(
+                    "Normalized source '{}' to '{}'.",
+                    source, normalized
+                )),
+            ));
+        }
+
+        anyhow::bail!(
+            "Invalid source format: must be 'registry:', 'local:', 'github:', 'git:', a path, or a git URL"
+        )
     }
 
     fn registry_warnings(
@@ -748,7 +862,7 @@ impl InstallCommand {
         let merged = merge_configs(Some(global), Some(project), &self.project_root)?;
         if merged.registry.len() > 1 {
             return Ok(vec![
-                "Multiple registries are configured; use --source to select the desired registry."
+                "Multiple registries are configured; use --registry or an explicit registry source."
                     .to_string(),
             ]);
         }
@@ -798,6 +912,9 @@ impl InstallCommand {
 struct ResolvedNameAndSource {
     name: String,
     source: String,
+    source_is_registry: bool,
+    source_explicit: bool,
+    warnings: Vec<String>,
 }
 
 fn is_local_path(input: &str, project_root: &Path) -> bool {
@@ -916,6 +1033,7 @@ fn parse_key_values(pairs: &[String], label: &str) -> anyhow::Result<HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn setup_test_env() -> (TempDir, InstallCommand) {
@@ -955,6 +1073,29 @@ source = "github:anthropics/skills"
         );
 
         (temp, cmd)
+    }
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap_or_else(|err| panic!("Failed to run git {:?}: {}", args, err));
+        assert!(status.success(), "git {:?} failed", args);
+    }
+
+    fn init_git_repo(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        run_git(dir, &["init"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test User"]);
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "name: demo-skill\n\nTest instructions.\n",
+        )
+        .unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
     }
 
     #[test]
@@ -1061,6 +1202,78 @@ Test instructions."#,
     }
 
     #[test]
+    fn test_install_skill_normalizes_explicit_local_source() {
+        let (temp, cmd) = setup_test_env();
+
+        let skill_dir = temp
+            .path()
+            .join("project")
+            .join("skills")
+            .join("demo-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "name: demo-skill\n\nTest instructions.\n",
+        )
+        .unwrap();
+
+        let opts = InstallOptions::skill("demo-skill")
+            .with_scope(ConfigScope::PerProjectShared)
+            .with_source("./skills/demo-skill");
+
+        let report = cmd.execute(&opts).unwrap();
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Normalized source")),
+            "expected normalization warning"
+        );
+
+        let config_store = ConfigStore::from_paths(
+            ConfigScope::PerProjectShared,
+            cmd.home_dir.parent().unwrap().join("config"),
+            cmd.project_root.clone(),
+        );
+        let config = config_store.load().unwrap();
+        let entry = config.skill.get("demo-skill").unwrap();
+        assert_eq!(entry.source, "local:./skills/demo-skill");
+    }
+
+    #[test]
+    fn test_install_skill_normalizes_explicit_git_source() {
+        let (temp, cmd) = setup_test_env();
+
+        let repo_dir = temp.path().join("git-skill");
+        init_git_repo(&repo_dir);
+
+        let raw_source = format!("git+{}", repo_dir.display());
+        let opts = InstallOptions::skill("demo-skill")
+            .with_scope(ConfigScope::PerProjectShared)
+            .with_source(raw_source);
+
+        let report = cmd.execute(&opts).unwrap();
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Normalized source")),
+            "expected normalization warning"
+        );
+
+        let config_store = ConfigStore::from_paths(
+            ConfigScope::PerProjectShared,
+            cmd.home_dir.parent().unwrap().join("config"),
+            cmd.project_root.clone(),
+        );
+        let config = config_store.load().unwrap();
+        let entry = config.skill.get("demo-skill").unwrap();
+        assert_eq!(entry.source, format!("git:{}", repo_dir.display()));
+    }
+
+    #[test]
     fn test_install_report_includes_warnings() {
         let (_temp, cmd) = setup_test_env();
 
@@ -1073,6 +1286,27 @@ Test instructions."#,
 
         // Report should exist even with empty warnings
         assert_eq!(report.name, "warning-test");
+    }
+
+    #[test]
+    fn test_install_mcp_explicit_command_warns_on_runtime() {
+        let (_temp, cmd) = setup_test_env();
+
+        let opts = InstallOptions::mcp("demo-mcp")
+            .with_scope(ConfigScope::PerProjectShared)
+            .with_source("registry:demo-mcp")
+            .with_runtime("node")
+            .with_command(["echo", "hello"]);
+
+        let report = cmd.execute(&opts).unwrap();
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Ignoring --runtime")),
+            "expected runtime warning"
+        );
     }
 
     #[test]
