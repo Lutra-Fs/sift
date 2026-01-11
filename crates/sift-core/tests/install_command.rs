@@ -133,6 +133,7 @@ fn install_mcp_writes_lockfile() {
         .get("postgres")
         .expect("MCP server should be locked");
     assert_eq!(locked.constraint, "1.2.3");
+    // TODO: Registry resolution is not implemented yet; resolved_version is placeholder.
     assert_eq!(locked.resolved_version, "todo");
 }
 

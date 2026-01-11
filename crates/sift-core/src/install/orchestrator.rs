@@ -131,6 +131,7 @@ impl InstallOrchestrator {
         } else {
             "unmanaged"
         };
+        // TODO: Registry resolution is not implemented yet; resolved_version is a placeholder.
         let resolved_version = if is_registry { "todo" } else { "unmanaged" };
         let registry = if is_registry {
             entry.source.clone()

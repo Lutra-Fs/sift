@@ -284,7 +284,6 @@ fn run_install(args: InstallArgs) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn split_name_and_version(input: &str) -> Result<(String, Option<String>)> {
     if is_local_path(input) || is_git_like(input) {
         return Ok((input.to_string(), None));

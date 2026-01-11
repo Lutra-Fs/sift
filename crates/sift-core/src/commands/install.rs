@@ -257,6 +257,35 @@ impl InstallCommand {
             .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
             .to_path_buf();
 
+        Self::with_defaults_from_paths(home_dir, project_root, state_dir, global_config_dir).map(
+            |mut cmd| {
+                cmd.link_mode = link_mode;
+                cmd
+            },
+        )
+    }
+
+    pub fn with_defaults_from_paths(
+        home_dir: PathBuf,
+        project_root: PathBuf,
+        state_dir: PathBuf,
+        global_config_dir: PathBuf,
+    ) -> anyhow::Result<Self> {
+        let global_store = ConfigStore::from_paths(
+            ConfigScope::Global,
+            global_config_dir.clone(),
+            project_root.clone(),
+        );
+        let project_store = ConfigStore::from_paths(
+            ConfigScope::PerProjectShared,
+            global_config_dir.clone(),
+            project_root.clone(),
+        );
+        let global = global_store.load()?;
+        let project = project_store.load()?;
+        let merged = merge_configs(Some(global), Some(project), &project_root)?;
+        let link_mode = merged.link_mode.unwrap_or(LinkMode::Auto);
+
         Ok(Self::with_global_config_dir(
             home_dir,
             project_root,
@@ -449,6 +478,8 @@ impl InstallCommand {
                 if let Some(locked) = existing {
                     locked.resolved_version.clone()
                 } else {
+                    // Without a lockfile entry, refresh the cache even if SKILL.md exists.
+                    // The cache may have been populated by a different ref or manual checkout.
                     ensure_git_cache(&cache_dir, &spec, &self.state_dir, options.force)?
                 }
             } else {
@@ -580,13 +611,13 @@ impl InstallCommand {
             )]);
         }
 
-        // Build a resolved server spec from the entry
-        // In a full implementation, this would resolve the package from the registry
+        // Build a resolved server spec from the entry.
+        // NOTE: Registry resolution is not implemented yet; we pass name@version as args.
         let runtime = entry.runtime.as_deref().unwrap_or(DEFAULT_RUNTIME);
         let command = runtime.to_string();
 
-        // For registry sources, the args would be resolved from the registry
-        // For now, we use a placeholder
+        // For registry sources, args should be derived from registry metadata.
+        // TODO: Resolve from configured registries instead of relying on runtime tools.
         let resolved = version.unwrap_or(DEFAULT_VERSION);
         let mut args = vec![format!("{}@{}", name, resolved)];
         args.extend(entry.args.clone());
@@ -1104,6 +1135,7 @@ fn unique_temp_repo_dir(state_dir: &Path) -> anyhow::Result<PathBuf> {
             worktree_base.display()
         )
     })?;
+    clean_stale_worktrees(&worktree_base)?;
     for attempt in 0..100 {
         let thread_id = format!("{:?}", std::thread::current().id());
         let name = format!("{}.{}.{}", std::process::id(), thread_id, attempt);
@@ -1116,6 +1148,55 @@ fn unique_temp_repo_dir(state_dir: &Path) -> anyhow::Result<PathBuf> {
         "Failed to allocate a temp worktree directory in {}",
         worktree_base.display()
     );
+}
+
+fn clean_stale_worktrees(worktree_base: &Path) -> anyhow::Result<()> {
+    let now = std::time::SystemTime::now();
+    let ttl = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+    let entries = match std::fs::read_dir(worktree_base) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("Failed to read worktrees dir: {}", worktree_base.display())
+            });
+        }
+    };
+
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "Failed to read worktrees dir entry: {}",
+                worktree_base.display()
+            )
+        })?;
+        let path = entry.path();
+        let ty = entry
+            .file_type()
+            .with_context(|| format!("Failed to stat worktrees entry: {}", path.display()))?;
+        if !ty.is_dir() {
+            continue;
+        }
+
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("Failed to stat worktree: {}", path.display()))?;
+        let modified = metadata
+            .modified()
+            .with_context(|| format!("Failed to read mtime: {}", path.display()))?;
+        if now.duration_since(modified).unwrap_or_default() < ttl {
+            continue;
+        }
+
+        if !is_empty_dir(&path)? {
+            continue;
+        }
+
+        std::fs::remove_dir(&path)
+            .with_context(|| format!("Failed to remove stale worktree dir: {}", path.display()))?;
+    }
+
+    Ok(())
 }
 
 fn copy_tree_filtered(src: &Path, dst: &Path) -> anyhow::Result<()> {
@@ -1170,6 +1251,8 @@ fn parse_key_values(pairs: &[String], label: &str) -> anyhow::Result<HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filetime::{FileTime, set_file_mtime};
+    use std::time::{Duration, SystemTime};
     use tempfile::TempDir;
 
     fn setup_test_env() -> (TempDir, InstallCommand) {
@@ -1241,6 +1324,38 @@ mod tests {
             candidate
         );
         assert!(!candidate.exists());
+    }
+
+    #[test]
+    fn test_unique_temp_repo_dir_cleans_stale_empty_worktrees() {
+        // Safe unwrap: tempdir creation failure should fail the test immediately.
+        let temp = TempDir::new().unwrap();
+        let state_dir = temp.path().join("state");
+        let worktrees_dir = state_dir.join("worktrees");
+        std::fs::create_dir_all(&worktrees_dir).unwrap();
+
+        let stale_dir = worktrees_dir.join("stale");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+
+        let keep_dir = worktrees_dir.join("keep");
+        std::fs::create_dir_all(&keep_dir).unwrap();
+        std::fs::write(keep_dir.join("payload"), "data").unwrap();
+
+        let stale_time = SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60);
+        let stale_file_time = FileTime::from_system_time(stale_time);
+        set_file_mtime(&stale_dir, stale_file_time).unwrap();
+        set_file_mtime(&keep_dir, stale_file_time).unwrap();
+
+        unique_temp_repo_dir(&state_dir).unwrap();
+
+        assert!(
+            !stale_dir.exists(),
+            "Expected stale empty worktree to be removed"
+        );
+        assert!(
+            keep_dir.exists(),
+            "Expected non-empty worktree to be preserved"
+        );
     }
 
     #[test]
@@ -1318,6 +1433,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let home = temp.path().join("home");
         let project = temp.path().join("project");
+        let state = temp.path().join("state");
         // On macOS, dirs::config_dir() returns $HOME/Library/Application Support
         // On Linux, it uses $XDG_CONFIG_HOME (or $HOME/.config)
         #[cfg(target_os = "macos")]
@@ -1334,37 +1450,8 @@ mod tests {
         let config_path = config_dir.join("sift.toml");
         std::fs::write(&config_path, "link_mode = \"copy\"").unwrap();
 
-        let original_dir = std::env::current_dir().unwrap();
-        let original_config = std::env::var("XDG_CONFIG_HOME").ok();
-        let original_home = std::env::var("HOME").ok();
-        std::env::set_current_dir(&project).unwrap();
-        unsafe {
-            // Setting process-level env vars is unsafe in Rust 2024; scoped to test.
-            std::env::set_var("HOME", &home);
-            std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
-        }
-
-        let cmd = InstallCommand::with_defaults().unwrap();
+        let cmd =
+            InstallCommand::with_defaults_from_paths(home, project, state, config_dir).unwrap();
         assert_eq!(cmd.link_mode, LinkMode::Copy);
-
-        std::env::set_current_dir(original_dir).unwrap();
-        if let Some(value) = original_config {
-            unsafe {
-                std::env::set_var("XDG_CONFIG_HOME", value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("XDG_CONFIG_HOME");
-            }
-        }
-        if let Some(value) = original_home {
-            unsafe {
-                std::env::set_var("HOME", value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("HOME");
-            }
-        }
     }
 }
