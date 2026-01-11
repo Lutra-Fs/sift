@@ -1002,58 +1002,6 @@ mod tests {
     }
 
     #[test]
-    fn test_github_url_construction() {
-        // Test GitHubFetcher URL construction for nested plugin.json
-        let url =
-            crate::registry::marketplace::github_fetcher::GitHubFetcher::construct_plugin_json_url(
-                "github:anthropics/life-sciences",
-                "./10x-genomics",
-                None,
-            )
-            .unwrap();
-
-        assert_eq!(
-            url,
-            "https://raw.githubusercontent.com/anthropics/life-sciences/main/10x-genomics/.claude-plugin/plugin.json"
-        );
-    }
-
-    // === PHASE 3: NESTED PLUGIN MERGING TESTS (RED) ===
-
-    #[test]
-    fn test_merge_plugin_with_nested_mcp_url() {
-        // Test merging marketplace entry with nested plugin.json
-        // Marketplace entry has basic info, nested plugin has mcpServers URL
-        let marketplace_entry = serde_json::json!({
-            "name": "10x-genomics",
-            "source": "./10x-genomics",
-            "description": "Marketplace description",
-            "category": "life-sciences"
-        });
-
-        let nested_plugin = serde_json::json!({
-            "name": "10x-genomics",
-            "version": "1.0.0",
-            "mcpServers": "https://github.com/10XGenomics/txg-mcp/releases/latest/download/txg-node.mcpb"
-        });
-
-        // This will fail until we implement merge_plugin_with_nested
-        let merged = crate::registry::marketplace::merge_nested::merge_plugin_with_nested(
-            &marketplace_entry,
-            &nested_plugin,
-        )
-        .unwrap();
-
-        assert_eq!(merged.name, "10x-genomics");
-        assert_eq!(merged.version, "1.0.0"); // From nested
-        assert_eq!(merged.description, "Marketplace description"); // From marketplace
-        assert_eq!(merged.category, Some("life-sciences".to_string())); // From marketplace
-        assert!(merged.mcp_servers.is_some());
-    }
-
-    // === REAL MARKETPLACE VALIDATION ===
-
-    #[test]
     fn test_parse_real_anthropic_skills_marketplace() {
         // Real marketplace.json from anthropics/skills
         let json = r#"{

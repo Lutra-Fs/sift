@@ -5,9 +5,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-use anyhow::Context;
 
 use crate::client::ClientAdapter;
 use crate::client::ClientContext;
@@ -16,12 +13,14 @@ use crate::config::{
     ConfigScope, ConfigStore, McpConfigEntry, OwnershipStore, SkillConfigEntry, merge_configs,
 };
 use crate::fs::LinkMode;
+use crate::git::GitFetcher;
 use crate::install::orchestrator::{InstallMcpRequest, InstallOrchestrator};
 use crate::install::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
 };
 use crate::mcp::spec::McpResolvedServer;
 use crate::skills::installer::{GitSkillMetadata, SkillInstaller};
+use crate::source::{ResolvedSource, SourceResolver};
 use crate::version::store::LockfileStore;
 
 /// Default runtime for MCP servers when not specified
@@ -454,7 +453,10 @@ impl InstallCommand {
         let client = ClaudeCodeClient::new();
         let ctx = ClientContext::new(self.home_dir.clone(), self.project_root.clone());
 
-        let cache_dir = self.state_dir.join("cache").join("skills").join(&name);
+        // Resolve source to a fetchable specification
+        let source_resolver = self.create_source_resolver()?;
+        let (resolved_source, registry_metadata) =
+            source_resolver.resolve_with_metadata(&source)?;
 
         let mut git_metadata = None;
         let mut resolved_version = options
@@ -463,41 +465,58 @@ impl InstallCommand {
             .unwrap_or_else(|| DEFAULT_VERSION.to_string());
         let mut constraint = resolved_version.clone();
         let mut registry = "default".to_string();
+        let cache_dir;
 
-        if is_git_source(&source) {
-            ensure_git_version()?;
-            let spec = parse_git_source(&source)?;
-            let lockfile = LockfileStore::load(
-                Some(self.project_root.clone()),
-                self.state_dir.join("locks"),
-            )?;
-            let existing = lockfile.skills.get(&name);
-            let is_cache_ready = cache_dir.join("SKILL.md").exists();
+        match resolved_source {
+            ResolvedSource::Git(ref spec) => {
+                GitFetcher::ensure_git_version()?;
 
-            let commit = if !options.force && is_cache_ready {
-                if let Some(locked) = existing {
-                    locked.resolved_version.clone()
+                let fetcher = GitFetcher::new(self.state_dir.clone());
+
+                // Check lockfile for existing resolved version
+                let lockfile = LockfileStore::load(
+                    Some(self.project_root.clone()),
+                    self.state_dir.join("locks"),
+                )?;
+                let existing = lockfile.skills.get(&name);
+
+                let result = if !options.force {
+                    if let Some(locked) = existing.filter(|e| e.is_installed()) {
+                        // Use cached version from lockfile
+                        crate::git::FetchResult {
+                            cache_dir: locked.cache_src_path.clone().unwrap_or_else(|| {
+                                self.state_dir.join("cache").join("skills").join(&name)
+                            }),
+                            commit_sha: locked.resolved_version.clone(),
+                        }
+                    } else {
+                        fetcher.fetch(spec, &name, options.force)?
+                    }
                 } else {
-                    // Without a lockfile entry, refresh the cache even if SKILL.md exists.
-                    // The cache may have been populated by a different ref or manual checkout.
-                    ensure_git_cache(&cache_dir, &spec, &self.state_dir, options.force)?
-                }
-            } else {
-                ensure_git_cache(&cache_dir, &spec, &self.state_dir, options.force)?
-            };
+                    fetcher.fetch(spec, &name, options.force)?
+                };
 
-            resolved_version = commit;
-            constraint = spec.reference.clone().unwrap_or_else(|| "HEAD".to_string());
-            registry = source.clone();
-            git_metadata = Some(GitSkillMetadata {
-                repo: spec.repo.clone(),
-                reference: spec.reference.clone(),
-                subdir: spec.subdir.clone(),
-            });
-        } else {
-            std::fs::create_dir_all(&cache_dir).with_context(|| {
-                format!("Failed to create cache directory: {}", cache_dir.display())
-            })?;
+                cache_dir = result.cache_dir;
+                resolved_version = result.commit_sha;
+                constraint = spec.reference.clone().unwrap_or_else(|| "HEAD".to_string());
+                registry = if let Some(ref meta) = registry_metadata {
+                    meta.original_source.clone()
+                } else {
+                    source.clone()
+                };
+                git_metadata = Some(GitSkillMetadata {
+                    repo: spec.repo_url.clone(),
+                    reference: spec.reference.clone(),
+                    subdir: spec.subdir.clone(),
+                });
+            }
+            ResolvedSource::Local(ref spec) => {
+                cache_dir = spec.path.clone();
+                // For local sources, we don't fetch - just use the path directly
+                if !cache_dir.exists() {
+                    anyhow::bail!("Local skill path does not exist: {}", cache_dir.display());
+                }
+            }
         }
 
         // Determine scope request
@@ -578,6 +597,36 @@ impl InstallCommand {
         )
     }
 
+    fn create_source_resolver(&self) -> anyhow::Result<SourceResolver> {
+        // Load registry configurations from global and project configs
+        let global_store = ConfigStore::from_paths(
+            ConfigScope::Global,
+            self.global_config_dir.clone(),
+            self.project_root.clone(),
+        );
+        let project_store = ConfigStore::from_paths(
+            ConfigScope::PerProjectShared,
+            self.global_config_dir.clone(),
+            self.project_root.clone(),
+        );
+        let global = global_store.load()?;
+        let project = project_store.load()?;
+        let merged = merge_configs(Some(global), Some(project), &self.project_root)?;
+
+        // Convert registry entries to RegistryConfig
+        let mut registries = std::collections::HashMap::new();
+        for (key, entry) in merged.registry {
+            let config: crate::registry::RegistryConfig = entry.try_into()?;
+            registries.insert(key, config);
+        }
+
+        Ok(SourceResolver::new(
+            self.state_dir.clone(),
+            self.project_root.clone(),
+            registries,
+        ))
+    }
+
     fn build_mcp_servers(
         &self,
         name: &str,
@@ -656,24 +705,24 @@ impl InstallCommand {
         ))
     }
 
-    fn infer_local_source(&self, input: &str) -> Option<ResolvedSource> {
+    fn infer_local_source(&self, input: &str) -> Option<ResolvedNameAndSource> {
         if !is_local_path(input, &self.project_root) {
             return None;
         }
         let name = derive_name_from_path(input).ok()?;
-        Some(ResolvedSource {
+        Some(ResolvedNameAndSource {
             name,
             source: format!("local:{}", input),
         })
     }
 
-    fn infer_git_source(&self, input: &str) -> Option<ResolvedSource> {
+    fn infer_git_source(&self, input: &str) -> Option<ResolvedNameAndSource> {
         if !is_git_like(input) {
             return None;
         }
         let source = normalize_git_source(input);
         let name = derive_name_from_git_source(&source).ok()?;
-        Some(ResolvedSource { name, source })
+        Some(ResolvedNameAndSource { name, source })
     }
 
     fn registry_warnings(
@@ -746,7 +795,7 @@ impl InstallCommand {
 }
 
 #[derive(Debug)]
-struct ResolvedSource {
+struct ResolvedNameAndSource {
     name: String,
     source: String,
 }
@@ -850,390 +899,6 @@ fn resolve_transport(
     }
 }
 
-#[derive(Debug)]
-struct GitSourceSpec {
-    repo: String,
-    reference: Option<String>,
-    subdir: Option<String>,
-}
-
-fn is_git_source(source: &str) -> bool {
-    source.starts_with("git:") || source.starts_with("github:")
-}
-
-fn ensure_git_version() -> anyhow::Result<()> {
-    let output = Command::new("git")
-        .arg("--version")
-        .output()
-        .context("Failed to invoke git --version")?;
-    if !output.status.success() {
-        anyhow::bail!("Failed to run git --version");
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let version = stdout
-        .split_whitespace()
-        .nth(2)
-        .ok_or_else(|| anyhow::anyhow!("Unexpected git version output: {}", stdout))?;
-    let mut parts = version.split('.');
-    let major: u32 = parts
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Invalid git version: {}", version))?
-        .parse()?;
-    let minor: u32 = parts
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Invalid git version: {}", version))?
-        .parse()?;
-    if major > 2 || (major == 2 && minor >= 25) {
-        return Ok(());
-    }
-    anyhow::bail!("Git 2.25+ is required for sparse checkout. Please upgrade git.");
-}
-
-fn parse_git_source(source: &str) -> anyhow::Result<GitSourceSpec> {
-    let raw = source.strip_prefix("git:").unwrap_or(source);
-    let raw = if let Some(stripped) = raw.strip_prefix("github:") {
-        format!("https://github.com/{}", stripped)
-    } else {
-        raw.to_string()
-    };
-
-    if let Some((repo, reference, subdir)) = split_tree_path(&raw) {
-        if subdir.is_empty() {
-            anyhow::bail!("Git URL is missing a path after /tree/<ref>/");
-        }
-        return Ok(GitSourceSpec {
-            repo,
-            reference: Some(reference),
-            subdir: Some(subdir),
-        });
-    }
-
-    Ok(GitSourceSpec {
-        repo: raw,
-        reference: None,
-        subdir: None,
-    })
-}
-
-fn split_tree_path(raw: &str) -> Option<(String, String, String)> {
-    let marker = "/tree/";
-    let idx = raw.find(marker)?;
-    let repo = raw[..idx].to_string();
-    let rest = &raw[idx + marker.len()..];
-    let mut parts = rest.splitn(2, '/');
-    let reference = parts.next()?.to_string();
-    let subdir = parts.next().unwrap_or("").to_string();
-    Some((repo, reference, subdir))
-}
-
-fn ensure_git_cache(
-    cache_dir: &Path,
-    spec: &GitSourceSpec,
-    state_dir: &Path,
-    force: bool,
-) -> anyhow::Result<String> {
-    let skill_marker = cache_dir.join("SKILL.md");
-    if cache_dir.exists() && skill_marker.exists() && !force {
-        let bare_dir = ensure_bare_repo(state_dir, spec, false)?;
-        return resolve_git_commit(&bare_dir, spec, false);
-    }
-    if cache_dir.exists() {
-        if force || is_empty_dir(cache_dir)? {
-            std::fs::remove_dir_all(cache_dir).with_context(|| {
-                format!("Failed to remove cache directory: {}", cache_dir.display())
-            })?;
-        } else {
-            anyhow::bail!(
-                "Skill cache exists but is missing SKILL.md: {}. Use --force to refresh.",
-                cache_dir.display()
-            );
-        }
-    }
-
-    let bare_dir = ensure_bare_repo(state_dir, spec, force)?;
-    let commit = resolve_git_commit(&bare_dir, spec, force)?;
-    export_git_subdir(&bare_dir, cache_dir, spec, &commit)?;
-    Ok(commit)
-}
-
-fn ensure_bare_repo(
-    state_dir: &Path,
-    spec: &GitSourceSpec,
-    force: bool,
-) -> anyhow::Result<PathBuf> {
-    let bare_dir = bare_repo_dir(state_dir, &spec.repo);
-    if bare_dir.exists() {
-        if force && spec.reference.is_none() {
-            std::fs::remove_dir_all(&bare_dir)
-                .with_context(|| format!("Failed to remove bare repo: {}", bare_dir.display()))?;
-        } else {
-            return Ok(bare_dir);
-        }
-    }
-
-    std::fs::create_dir_all(
-        bare_dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Bare repo directory has no parent"))?,
-    )
-    .with_context(|| {
-        format!(
-            "Failed to create git cache directory: {}",
-            bare_dir.display()
-        )
-    })?;
-    run_git(
-        None,
-        &[
-            "clone",
-            "--filter=blob:none",
-            "--bare",
-            &spec.repo,
-            bare_dir
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid bare repo dir"))?,
-        ],
-    )?;
-    Ok(bare_dir)
-}
-
-fn resolve_git_commit(
-    bare_dir: &Path,
-    spec: &GitSourceSpec,
-    force: bool,
-) -> anyhow::Result<String> {
-    let reference = spec.reference.as_deref().unwrap_or("HEAD");
-    if force && spec.reference.is_some() {
-        run_git(
-            Some(bare_dir),
-            &["fetch", "--filter=blob:none", "origin", reference],
-        )?;
-        return git_rev_parse(Some(bare_dir), "FETCH_HEAD");
-    }
-
-    match git_rev_parse(Some(bare_dir), reference) {
-        Ok(commit) => Ok(commit),
-        Err(err) => {
-            if spec.reference.is_some() {
-                run_git(
-                    Some(bare_dir),
-                    &["fetch", "--filter=blob:none", "origin", reference],
-                )?;
-                git_rev_parse(Some(bare_dir), "FETCH_HEAD")
-            } else {
-                Err(err)
-            }
-        }
-    }
-}
-
-fn export_git_subdir(
-    bare_dir: &Path,
-    cache_dir: &Path,
-    spec: &GitSourceSpec,
-    commit: &str,
-) -> anyhow::Result<()> {
-    let worktree_dir = unique_temp_repo_dir(cache_dir)?;
-    run_git(
-        Some(bare_dir),
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            worktree_dir
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid worktree dir"))?,
-            commit,
-        ],
-    )?;
-
-    if let Some(subdir) = &spec.subdir {
-        run_git(Some(&worktree_dir), &["sparse-checkout", "init", "--cone"])?;
-        run_git(Some(&worktree_dir), &["sparse-checkout", "set", subdir])?;
-        run_git(Some(&worktree_dir), &["checkout", commit])?;
-    }
-
-    let src_root = if let Some(subdir) = &spec.subdir {
-        worktree_dir.join(subdir)
-    } else {
-        worktree_dir.clone()
-    };
-    if !src_root.exists() {
-        anyhow::bail!(
-            "Git checkout did not create expected path: {}",
-            src_root.display()
-        );
-    }
-
-    std::fs::create_dir_all(cache_dir)
-        .with_context(|| format!("Failed to create cache directory: {}", cache_dir.display()))?;
-    copy_tree_filtered(&src_root, cache_dir)?;
-
-    run_git(
-        Some(bare_dir),
-        &[
-            "worktree",
-            "remove",
-            "--force",
-            worktree_dir
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid worktree dir"))?,
-        ],
-    )?;
-    let _ = std::fs::remove_dir_all(&worktree_dir);
-    Ok(())
-}
-
-fn run_git(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
-    let mut cmd = Command::new("git");
-    cmd.args(args);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    let output = cmd
-        .output()
-        .with_context(|| format!("Failed to run git {:?}", args))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Git command failed {:?}: {}", args, stderr.trim());
-    }
-    Ok(())
-}
-
-fn git_rev_parse(cwd: Option<&Path>, rev: &str) -> anyhow::Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(["rev-parse", rev]);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    let output = cmd
-        .output()
-        .with_context(|| format!("Failed to run git rev-parse {}", rev))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git rev-parse {} failed: {}", rev, stderr.trim());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn is_empty_dir(path: &Path) -> anyhow::Result<bool> {
-    let mut entries = std::fs::read_dir(path)
-        .with_context(|| format!("Failed to read directory: {}", path.display()))?;
-    Ok(entries.next().is_none())
-}
-
-fn bare_repo_dir(state_dir: &Path, repo_url: &str) -> PathBuf {
-    let hash = blake3::hash(repo_url.as_bytes()).to_hex().to_string();
-    state_dir.join("git").join(format!("{}.git", hash))
-}
-
-fn unique_temp_repo_dir(state_dir: &Path) -> anyhow::Result<PathBuf> {
-    let worktree_base = state_dir.join("worktrees");
-    std::fs::create_dir_all(&worktree_base).with_context(|| {
-        format!(
-            "Failed to create worktrees directory: {}",
-            worktree_base.display()
-        )
-    })?;
-    clean_stale_worktrees(&worktree_base)?;
-    for attempt in 0..100 {
-        let thread_id = format!("{:?}", std::thread::current().id());
-        let name = format!("{}.{}.{}", std::process::id(), thread_id, attempt);
-        let candidate = worktree_base.join(name);
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    anyhow::bail!(
-        "Failed to allocate a temp worktree directory in {}",
-        worktree_base.display()
-    );
-}
-
-fn clean_stale_worktrees(worktree_base: &Path) -> anyhow::Result<()> {
-    let now = std::time::SystemTime::now();
-    let ttl = std::time::Duration::from_secs(7 * 24 * 60 * 60);
-    let entries = match std::fs::read_dir(worktree_base) {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!("Failed to read worktrees dir: {}", worktree_base.display())
-            });
-        }
-    };
-
-    for entry in entries {
-        let entry = entry.with_context(|| {
-            format!(
-                "Failed to read worktrees dir entry: {}",
-                worktree_base.display()
-            )
-        })?;
-        let path = entry.path();
-        let ty = entry
-            .file_type()
-            .with_context(|| format!("Failed to stat worktrees entry: {}", path.display()))?;
-        if !ty.is_dir() {
-            continue;
-        }
-
-        let metadata = entry
-            .metadata()
-            .with_context(|| format!("Failed to stat worktree: {}", path.display()))?;
-        let modified = metadata
-            .modified()
-            .with_context(|| format!("Failed to read mtime: {}", path.display()))?;
-        if now.duration_since(modified).unwrap_or_default() < ttl {
-            continue;
-        }
-
-        if !is_empty_dir(&path)? {
-            continue;
-        }
-
-        std::fs::remove_dir(&path)
-            .with_context(|| format!("Failed to remove stale worktree dir: {}", path.display()))?;
-    }
-
-    Ok(())
-}
-
-fn copy_tree_filtered(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    for entry in
-        std::fs::read_dir(src).with_context(|| format!("Failed to read dir: {}", src.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("Failed to read dir entry: {}", src.display()))?;
-        let ty = entry
-            .file_type()
-            .with_context(|| format!("Failed to stat dir entry: {}", entry.path().display()))?;
-        let from = entry.path();
-        let file_name = entry.file_name();
-        if file_name == ".git" {
-            continue;
-        }
-        let to = dst.join(&file_name);
-
-        if ty.is_dir() {
-            std::fs::create_dir_all(&to)
-                .with_context(|| format!("Failed to create directory: {}", to.display()))?;
-            copy_tree_filtered(&from, &to)?;
-        } else if ty.is_file() {
-            std::fs::copy(&from, &to).with_context(|| {
-                format!(
-                    "Failed to copy file from {} to {}",
-                    from.display(),
-                    to.display()
-                )
-            })?;
-        } else {
-            anyhow::bail!("Unsupported filesystem entry type at {}", from.display());
-        }
-    }
-    Ok(())
-}
-
 fn parse_key_values(pairs: &[String], label: &str) -> anyhow::Result<HashMap<String, String>> {
     let mut map = HashMap::new();
     for pair in pairs {
@@ -1251,8 +916,6 @@ fn parse_key_values(pairs: &[String], label: &str) -> anyhow::Result<HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use filetime::{FileTime, set_file_mtime};
-    use std::time::{Duration, SystemTime};
     use tempfile::TempDir;
 
     fn setup_test_env() -> (TempDir, InstallCommand) {
@@ -1266,6 +929,22 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::create_dir_all(&state).unwrap();
         std::fs::create_dir_all(&global_config).unwrap();
+
+        // Add minimal registry configuration for testing
+        let config_file = global_config.join("sift.toml");
+        std::fs::write(
+            &config_file,
+            r#"
+[registry.demo]
+type = "claude-marketplace"
+source = "github:anthropics/skills"
+
+[registry.anthropic-skills]
+type = "claude-marketplace"
+source = "github:anthropics/skills"
+"#,
+        )
+        .unwrap();
 
         let cmd = InstallCommand::with_global_config_dir(
             home,
@@ -1306,56 +985,6 @@ mod tests {
         assert_eq!(opts.name, "pdf-processing");
         assert_eq!(opts.source, Some("registry:anthropic/pdf".to_string()));
         assert_eq!(opts.version, Some("latest".to_string()));
-    }
-
-    #[test]
-    fn test_unique_temp_repo_dir_allocates_under_worktrees() {
-        // Safe unwrap: tempdir creation failure should fail the test immediately.
-        let temp = TempDir::new().unwrap();
-        let state_dir = temp.path().join("state");
-        // Safe unwrap: test environment expects writable temp dir.
-        std::fs::create_dir_all(&state_dir).unwrap();
-
-        let candidate = unique_temp_repo_dir(&state_dir).unwrap();
-
-        assert!(
-            candidate.starts_with(state_dir.join("worktrees")),
-            "Expected {:?} under worktrees",
-            candidate
-        );
-        assert!(!candidate.exists());
-    }
-
-    #[test]
-    fn test_unique_temp_repo_dir_cleans_stale_empty_worktrees() {
-        // Safe unwrap: tempdir creation failure should fail the test immediately.
-        let temp = TempDir::new().unwrap();
-        let state_dir = temp.path().join("state");
-        let worktrees_dir = state_dir.join("worktrees");
-        std::fs::create_dir_all(&worktrees_dir).unwrap();
-
-        let stale_dir = worktrees_dir.join("stale");
-        std::fs::create_dir_all(&stale_dir).unwrap();
-
-        let keep_dir = worktrees_dir.join("keep");
-        std::fs::create_dir_all(&keep_dir).unwrap();
-        std::fs::write(keep_dir.join("payload"), "data").unwrap();
-
-        let stale_time = SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60);
-        let stale_file_time = FileTime::from_system_time(stale_time);
-        set_file_mtime(&stale_dir, stale_file_time).unwrap();
-        set_file_mtime(&keep_dir, stale_file_time).unwrap();
-
-        unique_temp_repo_dir(&state_dir).unwrap();
-
-        assert!(
-            !stale_dir.exists(),
-            "Expected stale empty worktree to be removed"
-        );
-        assert!(
-            keep_dir.exists(),
-            "Expected non-empty worktree to be preserved"
-        );
     }
 
     #[test]
@@ -1401,11 +1030,29 @@ mod tests {
 
     #[test]
     fn test_install_skill_creates_config_entry() {
-        let (_temp, cmd) = setup_test_env();
+        let (temp, cmd) = setup_test_env();
+
+        // Create a local skill directory relative to project root
+        let skill_dir = temp
+            .path()
+            .join("project")
+            .join("skills")
+            .join("demo-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: demo-skill
+description: A test skill
+---
+
+Test instructions."#,
+        )
+        .unwrap();
 
         let opts = InstallOptions::skill("demo-skill")
             .with_scope(ConfigScope::PerProjectShared)
-            .with_source("registry:demo/skill");
+            .with_source("local:./skills/demo-skill");
 
         let report = cmd.execute(&opts).unwrap();
 

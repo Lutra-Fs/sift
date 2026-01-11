@@ -205,9 +205,13 @@ fn install_mcp_auto_scope_writes_project_override_and_local_config() {
 #[test]
 fn install_skill_creates_config_and_directory() {
     let (temp, cmd) = setup_isolated_install_command();
+    let project_root = temp.path().join("project");
+
+    // Create a local skill to install
+    write_skill_dir(&project_root, "skills/commit", "commit");
 
     let opts = InstallOptions::skill("commit")
-        .with_source("registry:official/commit")
+        .with_source("local:./skills/commit")
         .with_scope(ConfigScope::PerProjectShared);
 
     let report = cmd.execute(&opts).expect("Install should succeed");
@@ -217,7 +221,7 @@ fn install_skill_creates_config_and_directory() {
     assert!(report.changed);
 
     // Verify config file was created
-    let config_path = temp.path().join("project").join("sift.toml");
+    let config_path = project_root.join("sift.toml");
     assert!(config_path.exists(), "sift.toml should be created");
 
     // Parse and verify config content
@@ -299,9 +303,13 @@ fn install_global_scope_writes_to_global_config() {
 #[test]
 fn install_with_version_constraint() {
     let (temp, cmd) = setup_isolated_install_command();
+    let project_root = temp.path().join("project");
+
+    // Create a local skill to install
+    write_skill_dir(&project_root, "skills/versioned", "versioned-skill");
 
     let opts = InstallOptions::skill("versioned-skill")
-        .with_source("registry:test/versioned")
+        .with_source("local:./skills/versioned")
         .with_version("^1.0.0")
         .with_scope(ConfigScope::PerProjectShared);
 
@@ -309,7 +317,7 @@ fn install_with_version_constraint() {
     assert!(report.changed);
 
     // Verify config contains version
-    let config_path = temp.path().join("project").join("sift.toml");
+    let config_path = project_root.join("sift.toml");
     let content = std::fs::read_to_string(&config_path).expect("Should read sift.toml");
     assert!(
         content.contains("version = \"^1.0.0\""),
@@ -664,7 +672,7 @@ fn install_skills_from_same_repo_reuses_bare_repo() {
 }
 
 #[test]
-fn install_warns_when_multiple_registries_and_no_source() {
+fn install_errors_when_multiple_registries_and_no_source() {
     let (temp, cmd) = setup_isolated_install_command();
     let global_config_path = temp.path().join("config").join("sift.toml");
     let global_config = r#"
@@ -678,15 +686,19 @@ source = "github:company/plugins"
 "#;
     std::fs::write(&global_config_path, global_config).expect("Failed to write global config");
 
+    // Using just a skill name without explicit source should fail when multiple registries exist
     let opts = InstallOptions::skill("demo").with_scope(ConfigScope::Global);
 
-    let report = cmd.execute(&opts).expect("Install should succeed");
+    let result = cmd.execute(&opts);
     assert!(
-        report
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("Multiple registries")),
-        "Expected warning about multiple registries when --source is omitted"
+        result.is_err(),
+        "Should fail when multiple registries configured without explicit source"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("Multiple registries"),
+        "Expected error about multiple registries, got: {}",
+        err
     );
 }
 
@@ -849,5 +861,210 @@ fn install_mcp_errors_on_empty_env_key() {
     assert!(
         err.to_string().contains("Invalid env entry (empty key)"),
         "Expected error about empty env key"
+    );
+}
+
+// =============================================================================
+// Registry source tests
+// =============================================================================
+
+/// Create a mock marketplace repo with marketplace.json
+fn create_marketplace_repo(temp: &std::path::Path, plugins: &[(&str, &str)]) -> String {
+    let repo_root = temp.join("marketplace");
+    std::fs::create_dir_all(&repo_root).expect("Failed to create repo dir");
+    run_git(&repo_root, &["init"]);
+    run_git(&repo_root, &["checkout", "-b", "main"]);
+    run_git(&repo_root, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_root, &["config", "user.name", "Test User"]);
+    run_git(&repo_root, &["config", "commit.gpgsign", "false"]);
+
+    // Create plugins
+    let plugin_entries: Vec<String> = plugins
+        .iter()
+        .map(|(name, path)| {
+            // Create skill directory
+            let skill_dir = repo_root.join(path);
+            std::fs::create_dir_all(&skill_dir).expect("Failed to create skill dir");
+            let content = format!(
+                "---\nname: {}\ndescription: Test skill\n---\n\nTest instructions.\n",
+                name
+            );
+            std::fs::write(skill_dir.join("SKILL.md"), content).expect("Failed to write SKILL.md");
+
+            // Return plugin JSON entry
+            format!(
+                r#"{{
+                    "name": "{}",
+                    "description": "Test plugin",
+                    "version": "1.0.0",
+                    "source": "./{}"
+                }}"#,
+                name, path
+            )
+        })
+        .collect();
+
+    // Create marketplace.json
+    let marketplace_json = format!(
+        r#"{{
+            "marketplace": {{"name": "test-marketplace"}},
+            "plugins": [{}]
+        }}"#,
+        plugin_entries.join(",")
+    );
+    std::fs::write(repo_root.join("marketplace.json"), marketplace_json)
+        .expect("Failed to write marketplace.json");
+
+    run_git(&repo_root, &["add", "."]);
+    run_git(&repo_root, &["commit", "-m", "init"]);
+
+    Url::from_directory_path(&repo_root)
+        .expect("repo root should convert to file URL")
+        .to_string()
+}
+
+#[test]
+fn install_skill_from_registry_source_fetches_content() {
+    let (temp, cmd) = setup_isolated_install_command();
+    let project_root = temp.path().join("project");
+
+    // Create a marketplace repo with a skill
+    let marketplace_url = create_marketplace_repo(temp.path(), &[("pdf-skill", "skills/pdf")]);
+
+    // Configure registry in global config
+    let global_config_path = temp.path().join("config").join("sift.toml");
+    let global_config = format!(
+        r#"
+[registry.test-marketplace]
+type = "claude-marketplace"
+source = "git:{}"
+"#,
+        marketplace_url.trim_end_matches('/')
+    );
+    std::fs::write(&global_config_path, global_config).expect("Failed to write global config");
+
+    // Install from registry source
+    let opts = InstallOptions::skill("pdf-skill")
+        .with_source("registry:test-marketplace/pdf-skill")
+        .with_scope(ConfigScope::PerProjectShared);
+
+    let report = cmd.execute(&opts).expect("Install should succeed");
+    assert!(report.changed);
+
+    // Verify skill was actually fetched (SKILL.md exists in installed location)
+    let installed = project_root.join(".claude/skills/pdf-skill/SKILL.md");
+    assert!(
+        installed.exists(),
+        "Expected installed SKILL.md to exist at {}",
+        installed.display()
+    );
+
+    // Verify content was fetched correctly
+    let content = std::fs::read_to_string(&installed).expect("Should read SKILL.md");
+    assert!(content.contains("name: pdf-skill"));
+}
+
+#[test]
+fn install_skill_from_registry_shares_bare_repo_with_direct_git() {
+    let (temp, cmd) = setup_isolated_install_command();
+
+    // Create a marketplace repo with two skills
+    let marketplace_url = create_marketplace_repo(
+        temp.path(),
+        &[("skill-a", "skills/a"), ("skill-b", "skills/b")],
+    );
+
+    // Configure registry
+    let global_config_path = temp.path().join("config").join("sift.toml");
+    let global_config = format!(
+        r#"
+[registry.test-mp]
+type = "claude-marketplace"
+source = "git:{}"
+"#,
+        marketplace_url.trim_end_matches('/')
+    );
+    std::fs::write(&global_config_path, global_config).expect("Failed to write global config");
+
+    // Install first skill via registry
+    let opts1 = InstallOptions::skill("skill-a")
+        .with_source("registry:test-mp/skill-a")
+        .with_scope(ConfigScope::PerProjectShared);
+    cmd.execute(&opts1).expect("First install should succeed");
+
+    // Install second skill via direct git URL (same repo)
+    let git_url = format!(
+        "git:{}/tree/main/skills/b",
+        marketplace_url.trim_end_matches('/')
+    );
+    let opts2 = InstallOptions::skill(git_url).with_scope(ConfigScope::PerProjectShared);
+    cmd.execute(&opts2).expect("Second install should succeed");
+
+    // Count bare repos - should be exactly 1
+    let git_cache_dir = temp.path().join("state").join("git");
+    let bare_repos: Vec<_> = std::fs::read_dir(&git_cache_dir)
+        .expect("git cache dir should exist")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with(".git"))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    assert_eq!(
+        bare_repos.len(),
+        1,
+        "Expected single bare repo for same repository"
+    );
+}
+
+#[test]
+fn install_skill_from_registry_records_git_metadata_in_lockfile() {
+    let (temp, cmd) = setup_isolated_install_command();
+    let project_root = temp.path().join("project");
+
+    let marketplace_url = create_marketplace_repo(temp.path(), &[("test-skill", "skills/test")]);
+
+    let global_config_path = temp.path().join("config").join("sift.toml");
+    let global_config = format!(
+        r#"
+[registry.mp]
+type = "claude-marketplace"
+source = "git:{}"
+"#,
+        marketplace_url.trim_end_matches('/')
+    );
+    std::fs::write(&global_config_path, global_config).expect("Failed to write global config");
+
+    let opts = InstallOptions::skill("test-skill")
+        .with_source("registry:mp/test-skill")
+        .with_scope(ConfigScope::PerProjectShared);
+    cmd.execute(&opts).expect("Install should succeed");
+
+    let lockfile = LockfileStore::load(Some(project_root), temp.path().join("state").join("locks"))
+        .expect("Lockfile should load");
+
+    let locked = lockfile
+        .skills
+        .get("test-skill")
+        .expect("Skill should be locked");
+
+    // Git metadata should be populated
+    assert!(
+        locked.git_repo.is_some(),
+        "git_repo should be set for registry source"
+    );
+    assert!(
+        locked.git_subdir.is_some(),
+        "git_subdir should be set for registry source"
+    );
+    // resolved_version should be a commit SHA (40 hex chars)
+    assert_eq!(
+        locked.resolved_version.len(),
+        40,
+        "resolved_version should be a commit SHA"
     );
 }

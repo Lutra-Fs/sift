@@ -7,11 +7,13 @@ pub mod client;
 pub mod commands;
 pub mod config;
 pub mod fs;
+pub mod git;
 pub mod install;
 pub mod mcp;
 pub mod registry;
 pub mod runtime;
 pub mod skills;
+pub mod source;
 pub mod status;
 pub mod version;
 
