@@ -757,9 +757,16 @@ pub fn collect_status_with_paths(
             crate::client::SkillDeliveryMode::None => "None".to_string(),
         };
 
+        // Check enabled status from config
+        let enabled = merged_config
+            .clients
+            .get(client.id())
+            .map(|c| c.enabled)
+            .unwrap_or(true);
+
         client_statuses.push(ClientStatus {
             id: client.id().to_string(),
-            enabled: true, // TODO: check config.clients
+            enabled,
             mcp_scopes: mcp_client_scopes,
             skill_scopes: skill_client_scopes,
             supports_symlinks: caps.supports_symlinked_skills,
@@ -802,6 +809,7 @@ fn resolve_plan_path(ctx: &ClientContext, root: PathRoot, relative: &Path) -> Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_aggregated_integrity_all_ok() {
@@ -833,5 +841,68 @@ mod tests {
         };
 
         assert_eq!(status.aggregated_integrity(), AggregatedIntegrity::AllOk(2));
+    }
+
+    #[test]
+    fn test_client_status_enabled_flag_from_config() {
+        // Setup temporary directories
+        let global_dir = tempdir().unwrap();
+        let state_dir = tempdir().unwrap();
+        let project_root = tempdir().unwrap();
+
+        // Create a global config with claude-code client explicitly disabled
+        let global_config_path = global_dir.path().join("sift.toml");
+        let config_content = r#"
+[clients.claude-code]
+enabled = false
+"#;
+        std::fs::write(&global_config_path, config_content).unwrap();
+
+        // Collect status
+        let status = collect_status_with_paths(
+            project_root.path(),
+            global_dir.path(),
+            state_dir.path(),
+            None,
+            false,
+        ).unwrap();
+
+        // Verify that claude-code client is disabled
+        let claude_client = status
+            .clients
+            .iter()
+            .find(|c| c.id == "claude-code")
+            .unwrap();
+
+        assert!(
+            !claude_client.enabled,
+            "Client should be disabled based on config"
+        );
+
+        // Verify that another client (simulated by absence of config) would be enabled by default
+        // Since we only have one registered client implementation (ClaudeCodeClient),
+        // we can't easily check a different ID without mocking.
+        // But we can check the default case by using an empty config.
+
+        let global_dir_empty = tempdir().unwrap();
+        let status_default = collect_status_with_paths(
+            project_root.path(),
+            global_dir_empty.path(),
+            state_dir.path(),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let claude_client_default = status_default
+            .clients
+            .iter()
+            .find(|c| c.id == "claude-code")
+            .unwrap();
+
+        assert!(
+            claude_client_default.enabled,
+            "Client should be enabled by default when not configured"
+        );
     }
 }
