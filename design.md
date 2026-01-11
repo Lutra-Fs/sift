@@ -71,8 +71,10 @@ Sift follows a strict "Do No Harm" policy regarding configuration files.
 3.  **SSE**: Intentionally excluded to keep configuration deterministic.
 
 #### **CLI Explicit Install**
+*   Explicit command or URL has the highest priority.
 *   When user provides stdio command (`--transport stdio -- <command>`) or HTTP URL (`--transport http --url <url>`), Sift writes configuration directly without registry resolution.
-*   If `--source` or `name@version` is provided simultaneously, CLI will ignore these parameters and issue a warning.
+*   If `--source`, `--registry`, or `name@version` is provided simultaneously, CLI will ignore these parameters and issue a warning.
+*   If `--runtime` is provided with an explicit command or URL, CLI will ignore it and issue a warning.
 *   When only `--env`/`--header` are provided, registry resolution logic is still used.
 
 #### **Heterogeneous Runtimes**
@@ -95,9 +97,9 @@ To avoid polluting the system PATH, Sift enforces cache isolation for runtimes:
     *   **Downgrade Strategy**: If a client lacks capability (e.g., doesn't support symlinks), Sift automatically downgrades: `Symlink → Hardlink → Copy`.
 
 #### **Naming & Source Inference**
-*   **Directory Name as Identity**: A skill's directory name must match the `name` in `SKILL.md`, so CLI uses the directory name directly as the skill name when installing from local path, without needing to read `SKILL.md`.
+*   **Directory Name as Identity**: Sift treats the directory name as the canonical skill name and does not read `SKILL.md` during install. Skill authors should keep `SKILL.md` aligned with the directory name.
 *   **Local/Git Auto-Detect**: When user provides local path or Git URL, CLI automatically infers `source` as `local:` or `git:`, no longer requiring `--source`.
-*   **Registry Disambiguation**: If multiple registries/marketplaces provide a skill or MCP with the same name and user doesn't explicitly specify `--source`, CLI will warn and require user to make an explicit choice.
+*   **Registry Disambiguation**: If multiple registries provide a skill or MCP with the same name and user doesn't explicitly specify `--registry` (or a `registry:` source), CLI will warn and require user to make an explicit choice.
 *   **Version Declaration**: Only `name@version` is supported for expressing version constraints (no longer provides `--version`), which is parsed and written to config as declared version.
 *   **Git Requirement**: Installing skills from Git URLs requires Git 2.25+ for sparse checkout.
 
@@ -190,6 +192,15 @@ Sift uses a **Resource-Oriented** design (`noun verb`) with shortcuts.
 *   **Setup**: `sift init`, `sift install` (alias `add`).
 *   **Maintenance**: `sift status`, `sift upgrade`, `sift apply`.
 *   **Cleanup**: `sift uninstall` (alias `rm`).
+*   **Inspection**: `sift list` (alias `ls`), `sift doctor`.
+*   **Resource based**: `sift mcp <verb>`, `sift skill <verb>`, `sift registry <verb>`.
+
+#### **Install Input Rules**
+*   If the install target looks like a local path, Sift treats it as local and normalizes to `local:`.
+*   If it looks like a git URL, Sift normalizes to `git:`.
+*   Otherwise, Sift treats the input as a registry package name.
+*   If multiple registries are configured and the user provides a bare name, CLI requires `--registry`.
+*   `--source` accepts fully-qualified sources and will be normalized when a raw URL or path is provided (warning on normalization).
 
 #### **Orphaned Entries & Pruning**
 When a tool is removed from `sift.toml` but remains in the lockfile or filesystem, it is **Orphaned**.

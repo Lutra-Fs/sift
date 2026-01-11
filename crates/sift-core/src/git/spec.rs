@@ -1,9 +1,10 @@
 //! Git source specification types.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Specification for a git source location.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitSpec {
     /// Repository URL (e.g., "https://github.com/org/repo")
     pub repo_url: String,

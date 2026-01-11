@@ -24,8 +24,8 @@ pub use ownership_store::OwnershipStore;
 pub use parser::{parse_sift_toml, parse_sift_toml_str, to_toml};
 pub use paths::config_path_for_scope;
 pub use schema::{
-    ClientConfigEntry, McpConfigEntry, McpOverrideEntry, ProjectConfig, SiftConfig,
-    SkillConfigEntry, SkillOverrideEntry,
+    ClientConfigEntry, McpConfigEntry, McpOverrideEntry, ProjectConfig, RegistryConfigEntry,
+    SiftConfig, SkillConfigEntry, SkillOverrideEntry,
 };
 pub use store::ConfigStore;
 

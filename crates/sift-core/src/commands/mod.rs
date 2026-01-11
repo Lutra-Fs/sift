@@ -5,5 +5,10 @@
 //! CLI, TUI, and GUI frontends.
 
 pub mod install;
+pub mod registry;
 
 pub use install::{InstallCommand, InstallOptions, InstallReport, InstallTarget};
+pub use registry::{
+    AddOptions as RegistryAddOptions, ListOptions as RegistryListOptions, RegistryCommand,
+    RegistryEntry, RegistryReport, RemoveOptions as RegistryRemoveOptions,
+};

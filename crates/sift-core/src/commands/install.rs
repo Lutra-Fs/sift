@@ -69,6 +69,18 @@ pub struct InstallOptions {
     pub command: Vec<String>,
 }
 
+struct ContinueSkillInstallRequest<'a> {
+    name: &'a str,
+    source: &'a str,
+    entry: &'a SkillConfigEntry,
+    options: &'a InstallOptions,
+    resolved_source: &'a ResolvedSource,
+    registry_metadata: Option<&'a crate::source::RegistryMetadata>,
+    warnings: Vec<String>,
+    client: &'a ClaudeCodeClient,
+    ctx: &'a ClientContext,
+}
+
 impl InstallOptions {
     /// Create new install options for an MCP server
     pub fn mcp(name: impl Into<String>) -> Self {
@@ -501,9 +513,156 @@ impl InstallCommand {
 
         // Resolve source to a fetchable specification
         let source_resolver = self.create_source_resolver()?;
+
+        // Check if this is a registry source that might have nested marketplaces
+        if let Some(registry_part) = source.strip_prefix("registry:") {
+            // Try to expand for nested marketplaces
+            let resolutions = source_resolver.resolve_registry_with_expansion(registry_part)?;
+
+            // Check for collisions
+            crate::source::SourceResolver::detect_collisions(&resolutions)
+                .map_err(|e| anyhow::anyhow!("Name collision detected: {}", e))?;
+
+            // If first resolution is a group, install all nested plugins directly
+            if resolutions
+                .first()
+                .map(|r| r.metadata.is_group)
+                .unwrap_or(false)
+            {
+                let mut changed = false;
+                let mut applied = false;
+                let mut nested_warnings = warnings;
+
+                for resolution in &resolutions {
+                    if resolution.metadata.is_group {
+                        continue; // Skip the parent group entry
+                    }
+
+                    // Install each nested plugin directly using the resolved GitSpec
+                    // Use short name (first alias) for filesystem path, canonical name for identification
+                    let nested_name = resolution
+                        .metadata
+                        .aliases
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| resolution.metadata.skill_name.clone());
+                    let resolved_source = ResolvedSource::Git(resolution.git_spec.clone());
+                    let registry_metadata = Some(resolution.metadata.clone());
+
+                    // Build config entry for this nested plugin
+                    let nested_entry = SkillConfigEntry {
+                        source: resolution.metadata.original_source.clone(),
+                        version: None, // Use latest/default
+                        targets: None,
+                        ignore_targets: None,
+                        reset_version: false,
+                    };
+
+                    // Create options for nested plugin
+                    let mut nested_options = options.clone();
+                    nested_options.name = nested_name.clone();
+                    nested_options.source = Some(resolution.metadata.original_source.clone());
+
+                    let request = ContinueSkillInstallRequest {
+                        name: &nested_name,
+                        source: &resolution.metadata.original_source,
+                        entry: &nested_entry,
+                        options: &nested_options,
+                        resolved_source: &resolved_source,
+                        registry_metadata: registry_metadata.as_ref(),
+                        warnings: Vec::new(),
+                        client: &client,
+                        ctx: &ctx,
+                    };
+                    match self.continue_skill_install(request) {
+                        Ok(report) => {
+                            changed = changed || report.changed;
+                            applied = applied || report.applied;
+                            nested_warnings.extend(report.warnings);
+                        }
+                        Err(e) => {
+                            // If installation fails, report but continue
+                            nested_warnings.push(format!(
+                                "Failed to install nested plugin '{}': {}",
+                                nested_name, e
+                            ));
+                        }
+                    }
+                }
+
+                // Build combined name for all installed nested plugins
+                let nested_names: Vec<_> = resolutions
+                    .iter()
+                    .filter(|r| !r.metadata.is_group)
+                    .map(|r| r.metadata.skill_name.clone())
+                    .collect();
+                let combined_name = format!("{} ({})", name, nested_names.join(", "));
+
+                // Return combined report
+                return Ok(InstallReport {
+                    name: combined_name,
+                    changed,
+                    applied,
+                    warnings: nested_warnings,
+                });
+            }
+
+            // No nested marketplace or single plugin - use first resolution
+            let first_resolution = &resolutions[0];
+            let resolved_source = ResolvedSource::Git(first_resolution.git_spec.clone());
+            let registry_metadata = Some(first_resolution.metadata.clone());
+
+            let request = ContinueSkillInstallRequest {
+                name: &name,
+                source: &source,
+                entry: &entry,
+                options,
+                resolved_source: &resolved_source,
+                registry_metadata: registry_metadata.as_ref(),
+                warnings,
+                client: &client,
+                ctx: &ctx,
+            };
+            return self.continue_skill_install(request);
+        }
+
+        // Non-registry source - use normal resolution
         let (resolved_source, registry_metadata) =
             source_resolver.resolve_with_metadata(&source)?;
 
+        let request = ContinueSkillInstallRequest {
+            name: &name,
+            source: &source,
+            entry: &entry,
+            options,
+            resolved_source: &resolved_source,
+            registry_metadata: registry_metadata.as_ref(),
+            warnings,
+            client: &client,
+            ctx: &ctx,
+        };
+        self.continue_skill_install(request)
+    }
+
+    /// Continue skill installation after source resolution.
+    ///
+    /// This helper method handles the actual installation logic after the source
+    /// has been resolved (either normally or via nested marketplace expansion).
+    fn continue_skill_install(
+        &self,
+        request: ContinueSkillInstallRequest<'_>,
+    ) -> anyhow::Result<InstallReport> {
+        let ContinueSkillInstallRequest {
+            name,
+            source,
+            entry,
+            options,
+            resolved_source,
+            registry_metadata,
+            mut warnings,
+            client,
+            ctx,
+        } = request;
         let mut git_metadata = None;
         let mut resolved_version = options
             .version
@@ -514,7 +673,7 @@ impl InstallCommand {
         let cache_dir;
 
         match resolved_source {
-            ResolvedSource::Git(ref spec) => {
+            ResolvedSource::Git(spec) => {
                 GitFetcher::ensure_git_version()?;
 
                 let fetcher = GitFetcher::new(self.state_dir.clone());
@@ -524,31 +683,31 @@ impl InstallCommand {
                     Some(self.project_root.clone()),
                     self.state_dir.join("locks"),
                 )?;
-                let existing = lockfile.skills.get(&name);
+                let existing = lockfile.skills.get(name);
 
                 let result = if !options.force {
                     if let Some(locked) = existing.filter(|e| e.is_installed()) {
                         // Use cached version from lockfile
                         crate::git::FetchResult {
                             cache_dir: locked.cache_src_path.clone().unwrap_or_else(|| {
-                                self.state_dir.join("cache").join("skills").join(&name)
+                                self.state_dir.join("cache").join("skills").join(name)
                             }),
                             commit_sha: locked.resolved_version.clone(),
                         }
                     } else {
-                        fetcher.fetch(spec, &name, options.force)?
+                        fetcher.fetch(spec, name, options.force)?
                     }
                 } else {
-                    fetcher.fetch(spec, &name, options.force)?
+                    fetcher.fetch(spec, name, options.force)?
                 };
 
                 cache_dir = result.cache_dir;
                 resolved_version = result.commit_sha;
                 constraint = spec.reference.clone().unwrap_or_else(|| "HEAD".to_string());
-                registry = if let Some(ref meta) = registry_metadata {
+                registry = if let Some(meta) = registry_metadata {
                     meta.original_source.clone()
                 } else {
-                    source.clone()
+                    source.to_string()
                 };
                 git_metadata = Some(GitSkillMetadata {
                     repo: spec.repo_url.clone(),
@@ -556,7 +715,7 @@ impl InstallCommand {
                     subdir: spec.subdir.clone(),
                 });
             }
-            ResolvedSource::Local(ref spec) => {
+            ResolvedSource::Local(spec) => {
                 cache_dir = spec.path.clone();
                 // For local sources, we don't fetch - just use the path directly
                 if !cache_dir.exists() {
@@ -597,10 +756,10 @@ impl InstallCommand {
 
         // Execute installation
         let report = orchestrator.install_skill(
-            &client,
-            &ctx,
-            &name,
-            entry,
+            client,
+            ctx,
+            name,
+            entry.clone(),
             &cache_dir,
             resolution,
             options.force,
@@ -612,7 +771,7 @@ impl InstallCommand {
 
         warnings.extend(report.warnings);
         Ok(InstallReport {
-            name,
+            name: name.to_string(),
             changed: matches!(report.outcome, crate::install::InstallOutcome::Changed),
             applied: report.applied,
             warnings,
@@ -1089,6 +1248,7 @@ source = "github:anthropics/skills"
         run_git(dir, &["init"]);
         run_git(dir, &["config", "user.email", "test@example.com"]);
         run_git(dir, &["config", "user.name", "Test User"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
         std::fs::write(
             dir.join("SKILL.md"),
             "name: demo-skill\n\nTest instructions.\n",

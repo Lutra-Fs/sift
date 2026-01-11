@@ -865,7 +865,8 @@ enabled = false
             state_dir.path(),
             None,
             false,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify that claude-code client is disabled
         let claude_client = status

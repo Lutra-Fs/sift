@@ -191,7 +191,7 @@ impl TryFrom<ClientConfigEntry> for crate::client::ClientConfig {
 }
 
 /// Registry configuration entry (inline config for TOML)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RegistryConfigEntry {
     /// Registry type: "sift" or "claude-marketplace"
     #[serde(default = "default_registry_type")]

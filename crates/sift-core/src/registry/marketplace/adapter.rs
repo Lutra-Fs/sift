@@ -456,10 +456,10 @@ impl MarketplaceAdapter {
                 runtime: crate::mcp::RuntimeType::Node, // Not used for HTTP
                 args: vec![],
                 url: Some(url_str.to_string()),
-                headers: std::collections::HashMap::new(),
+                headers: Self::parse_headers_field(server_config),
                 targets: None,
                 ignore_targets: None,
-                env: std::collections::HashMap::new(),
+                env: Self::parse_env_field(server_config),
             });
         }
 
@@ -472,10 +472,10 @@ impl MarketplaceAdapter {
                     runtime: crate::mcp::RuntimeType::Node,
                     args: vec![],
                     url: Some(url_str.to_string()),
-                    headers: std::collections::HashMap::new(),
+                    headers: Self::parse_headers_field(server_config),
                     targets: None,
                     ignore_targets: None,
-                    env: std::collections::HashMap::new(),
+                    env: Self::parse_env_field(server_config),
                 });
             }
 
@@ -500,10 +500,10 @@ impl MarketplaceAdapter {
                     runtime,
                     args,
                     url: None,
-                    headers: std::collections::HashMap::new(),
+                    headers: Self::parse_headers_field(server_config),
                     targets: None,
                     ignore_targets: None,
-                    env: std::collections::HashMap::new(),
+                    env: Self::parse_env_field(server_config),
                 });
             }
         }
@@ -512,6 +512,40 @@ impl MarketplaceAdapter {
             "Invalid MCP server config for '{}': must be URL string or object with command/url field",
             name
         )
+    }
+
+    /// Parse the env field from server configuration.
+    ///
+    /// Extracts environment variables as a key-value map from the JSON config.
+    fn parse_env_field(
+        server_config: &serde_json::Value,
+    ) -> std::collections::HashMap<String, String> {
+        server_config
+            .get("env")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Parse the headers field from server configuration.
+    ///
+    /// Extracts HTTP headers as a key-value map from the JSON config.
+    fn parse_headers_field(
+        server_config: &serde_json::Value,
+    ) -> std::collections::HashMap<String, String> {
+        server_config
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -1040,5 +1074,236 @@ mod tests {
         assert_eq!(configs.len(), 4);
         assert_eq!(configs[0].source, "local:./skills/xlsx");
         assert_eq!(configs[1].source, "local:./skills/docx");
+    }
+
+    /// Test parsing real anthropics/skills marketplace.json
+    /// This is the actual content from https://github.com/anthropics/skills
+    #[test]
+    fn test_parse_real_anthropic_skills_marketplace_full() {
+        let json = r#"{
+  "name": "anthropic-agent-skills",
+  "owner": {
+    "name": "Keith Lazuka",
+    "email": "klazuka@anthropic.com"
+  },
+  "metadata": {
+    "description": "Anthropic example skills",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "document-skills",
+      "description": "Collection of document processing suite including Excel, Word, PowerPoint, and PDF capabilities",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/xlsx",
+        "./skills/docx",
+        "./skills/pptx",
+        "./skills/pdf"
+      ]
+    },
+    {
+      "name": "example-skills",
+      "description": "Collection of example skills demonstrating various capabilities",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/algorithmic-art",
+        "./skills/brand-guidelines",
+        "./skills/canvas-design"
+      ]
+    }
+  ]
+}"#;
+
+        let manifest = MarketplaceAdapter::parse(json).unwrap();
+        assert_eq!(
+            manifest.marketplace.name,
+            Some("anthropic-agent-skills".to_string())
+        );
+        assert_eq!(manifest.plugins.len(), 2);
+
+        // Test document-skills plugin
+        let doc_plugin = &manifest.plugins[0];
+        assert_eq!(doc_plugin.name, "document-skills");
+        assert_eq!(doc_plugin.strict, Some(false));
+        assert!(doc_plugin.skills.is_some());
+
+        // Test skills expansion for document-skills
+        let doc_configs = MarketplaceAdapter::plugin_to_skill_configs(doc_plugin).unwrap();
+        assert_eq!(doc_configs.len(), 4);
+        assert_eq!(doc_configs[0].source, "local:./skills/xlsx");
+        assert_eq!(doc_configs[1].source, "local:./skills/docx");
+        assert_eq!(doc_configs[2].source, "local:./skills/pptx");
+        assert_eq!(doc_configs[3].source, "local:./skills/pdf");
+
+        // Test example-skills plugin
+        let example_plugin = &manifest.plugins[1];
+        assert_eq!(example_plugin.name, "example-skills");
+        let example_configs = MarketplaceAdapter::plugin_to_skill_configs(example_plugin).unwrap();
+        assert_eq!(example_configs.len(), 3);
+    }
+
+    /// Test parsing real anthropics/life-sciences marketplace.json
+    /// This tests the mixed type marketplace (some plugins have skills, some don't)
+    #[test]
+    fn test_parse_real_life_sciences_marketplace() {
+        let json = r#"{
+  "name": "life-sciences",
+  "owner": {
+    "name": "Anthropic",
+    "email": "support@anthropic.com"
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "description": "MCP servers and skills for life sciences research"
+  },
+  "plugins": [
+    {
+      "name": "10x-genomics",
+      "source": "./10x-genomics",
+      "description": "10x Genomics Cloud MCP server",
+      "category": "life-sciences",
+      "tags": ["genomics", "bioinformatics"]
+    },
+    {
+      "name": "single-cell-rna-qc",
+      "source": "./",
+      "description": "Quality control for single-cell RNA-seq data",
+      "category": "life-sciences",
+      "strict": false,
+      "skills": [
+        "./single-cell-rna-qc"
+      ]
+    }
+  ]
+}"#;
+
+        let manifest = MarketplaceAdapter::parse(json).unwrap();
+        assert_eq!(manifest.marketplace.name, Some("life-sciences".to_string()));
+        assert_eq!(manifest.plugins.len(), 2);
+
+        // Test 10x-genomics plugin (no skills array - should create single config)
+        let genomics_plugin = &manifest.plugins[0];
+        assert_eq!(genomics_plugin.name, "10x-genomics");
+        assert!(genomics_plugin.skills.is_none());
+
+        let genomics_configs =
+            MarketplaceAdapter::plugin_to_skill_configs(genomics_plugin).unwrap();
+        assert_eq!(genomics_configs.len(), 1);
+        assert_eq!(genomics_configs[0].source, "local:./10x-genomics");
+
+        // Test single-cell-rna-qc plugin (has skills array)
+        let qc_plugin = &manifest.plugins[1];
+        assert_eq!(qc_plugin.name, "single-cell-rna-qc");
+        assert_eq!(qc_plugin.strict, Some(false));
+        assert!(qc_plugin.skills.is_some());
+
+        let qc_configs = MarketplaceAdapter::plugin_to_skill_configs(qc_plugin).unwrap();
+        assert_eq!(qc_configs.len(), 1);
+        assert_eq!(qc_configs[0].source, "local:./single-cell-rna-qc");
+    }
+
+    /// Test parsing real firebase marketplace.json
+    /// This tests the MCP server only marketplace with mcpServers object
+    #[test]
+    fn test_parse_real_firebase_marketplace() {
+        let json = r#"{
+  "name": "firebase",
+  "owner": {
+    "name": "Firebase",
+    "email": "firebase-support@google.com"
+  },
+  "metadata": {
+    "description": "Official Claude plugin for Firebase",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "firebase",
+      "description": "Claude plugin for Firebase",
+      "version": "1.0.0",
+      "author": {
+        "name": "Firebase",
+        "url": "https://firebase.google.com/"
+      },
+      "mcpServers": {
+        "firebase": {
+          "description": "Firebase MCP server",
+          "command": "npx",
+          "args": ["-y", "firebase-tools", "mcp", "--dir", "."],
+          "env": {
+            "IS_FIREBASE_MCP": "true"
+          }
+        }
+      },
+      "source": "./"
+    }
+  ]
+}"#;
+
+        let manifest = MarketplaceAdapter::parse(json).unwrap();
+        assert_eq!(manifest.marketplace.name, Some("firebase".to_string()));
+        assert_eq!(manifest.plugins.len(), 1);
+
+        let plugin = &manifest.plugins[0];
+        assert_eq!(plugin.name, "firebase");
+        assert_eq!(plugin.version, "1.0.0");
+        assert!(plugin.mcp_servers.is_some());
+
+        // Test MCP server conversion
+        let mcp_configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin, None).unwrap();
+        assert_eq!(mcp_configs.len(), 1);
+
+        let (name, config) = &mcp_configs[0];
+        assert_eq!(name, "firebase");
+        assert_eq!(config.transport, crate::mcp::TransportType::Stdio);
+        assert_eq!(config.runtime, crate::mcp::RuntimeType::Node);
+        assert_eq!(
+            config.args,
+            vec!["-y", "firebase-tools", "mcp", "--dir", "."]
+        );
+    }
+
+    /// Test that MCP servers with env field are properly parsed
+    #[test]
+    fn test_mcp_server_with_env() {
+        let json = r#"{
+  "name": "test-marketplace",
+  "owner": {"name": "Test Owner"},
+  "plugins": [{
+    "name": "test",
+    "description": "Test",
+    "version": "1.0.0",
+    "source": "./test",
+    "mcpServers": {
+      "my-mcp": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-postgres"],
+        "env": {
+          "DATABASE_URL": "postgresql://localhost/mydb",
+          "DEBUG": "true"
+        }
+      }
+    }
+  }]
+}"#;
+
+        let manifest = MarketplaceAdapter::parse(json).unwrap();
+        let plugin = &manifest.plugins[0];
+
+        let configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin, None).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].1.runtime, crate::mcp::RuntimeType::Node);
+
+        // Verify env field is parsed
+        let config = &configs[0].1;
+        assert_eq!(config.env.len(), 2);
+        assert_eq!(
+            config.env.get("DATABASE_URL"),
+            Some(&"postgresql://localhost/mydb".to_string())
+        );
+        assert_eq!(config.env.get("DEBUG"), Some(&"true".to_string()));
     }
 }

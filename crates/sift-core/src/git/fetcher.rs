@@ -159,6 +159,25 @@ impl GitFetcher {
         String::from_utf8(output.stdout).context("File content is not valid UTF-8")
     }
 
+    /// Check if a marketplace manifest exists in the given GitSpec directory.
+    ///
+    /// Returns true if `.claude-plugin/marketplace.json` exists at the
+    /// location specified by the GitSpec (respecting subdir).
+    pub fn has_marketplace_manifest(&self, spec: &GitSpec) -> anyhow::Result<bool> {
+        match self.read_file(spec, ".claude-plugin/marketplace.json") {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Read a nested marketplace manifest from the given GitSpec directory.
+    ///
+    /// Reads `.claude-plugin/marketplace.json` from the location specified
+    /// by the GitSpec (respecting subdir).
+    pub fn read_nested_marketplace(&self, spec: &GitSpec) -> anyhow::Result<String> {
+        self.read_file(spec, ".claude-plugin/marketplace.json")
+    }
+
     /// Get the cache directory for a skill.
     fn skill_cache_dir(&self, skill_name: &str) -> PathBuf {
         self.state_dir.join("cache").join("skills").join(skill_name)

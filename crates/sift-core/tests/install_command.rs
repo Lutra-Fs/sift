@@ -904,7 +904,7 @@ fn create_marketplace_repo(temp: &std::path::Path, plugins: &[(&str, &str)]) -> 
         })
         .collect();
 
-    // Create marketplace.json
+    // Create .claude-plugin/marketplace.json
     let marketplace_json = format!(
         r#"{{
             "marketplace": {{"name": "test-marketplace"}},
@@ -912,7 +912,9 @@ fn create_marketplace_repo(temp: &std::path::Path, plugins: &[(&str, &str)]) -> 
         }}"#,
         plugin_entries.join(",")
     );
-    std::fs::write(repo_root.join("marketplace.json"), marketplace_json)
+    let marketplace_dir = repo_root.join(".claude-plugin");
+    std::fs::create_dir_all(&marketplace_dir).expect("Failed to create marketplace dir");
+    std::fs::write(marketplace_dir.join("marketplace.json"), marketplace_json)
         .expect("Failed to write marketplace.json");
 
     run_git(&repo_root, &["add", "."]);

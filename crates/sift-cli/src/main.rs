@@ -11,7 +11,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use sift_core::commands::{InstallCommand, InstallOptions, InstallTarget};
+use sift_core::commands::{
+    RegistryAddOptions, RegistryCommand, RegistryEntry, RegistryListOptions, RegistryRemoveOptions,
+};
 use sift_core::config::ConfigScope;
+use sift_core::registry::RegistryType;
 use sift_core::status::{EntryState, McpServerStatus, SkillStatus, SystemStatus, collect_status};
 
 #[derive(Parser)]
@@ -73,6 +77,9 @@ enum Commands {
         /// Configuration scope (global, local, shared)
         scope: String,
     },
+
+    /// Manage registries
+    Registry(RegistryArgs),
 }
 
 #[derive(Clone, Copy, ValueEnum, Default)]
@@ -84,6 +91,61 @@ enum OutputFormat {
     Json,
     /// Only show issues (non-zero exit if problems)
     Quiet,
+}
+
+#[derive(Args)]
+struct RegistryArgs {
+    #[command(subcommand)]
+    command: RegistrySubcommand,
+}
+
+#[derive(Subcommand)]
+enum RegistrySubcommand {
+    /// List configured registries
+    List {
+        /// Filter by scope (global, shared)
+        #[arg(long)]
+        scope: Option<String>,
+
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+
+    /// Add a new registry
+    Add {
+        /// Registry name (identifier used in sift.toml)
+        name: String,
+
+        /// Registry URL or source (https:// for sift, github:org/repo for marketplace)
+        source: String,
+
+        /// Registry type (auto-detected if not specified)
+        #[arg(long, short = 't', value_parser = ["sift", "claude-marketplace"])]
+        r#type: Option<String>,
+
+        /// Configuration scope
+        #[arg(long, default_value = "global")]
+        scope: String,
+
+        /// Overwrite existing registry with same name
+        #[arg(long, short)]
+        force: bool,
+    },
+
+    /// Remove a registry
+    Remove {
+        /// Registry name to remove
+        name: String,
+
+        /// Configuration scope to remove from
+        #[arg(long)]
+        scope: Option<String>,
+
+        /// Remove from all scopes
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -134,6 +196,9 @@ fn run_cli(command: Commands) -> Result<()> {
         },
         Commands::Config { scope } => {
             println!("Setting config scope to: {scope}");
+        }
+        Commands::Registry(args) => {
+            run_registry(args)?;
         }
     }
     Ok(())
@@ -252,6 +317,165 @@ fn run_install(args: InstallArgs) -> Result<()> {
         println!("  ⚠ {}", warning);
     }
 
+    Ok(())
+}
+
+fn run_registry(args: RegistryArgs) -> Result<()> {
+    let cmd = RegistryCommand::with_defaults()?;
+
+    match args.command {
+        RegistrySubcommand::List { scope, format } => {
+            let scope_filter = scope.as_deref().map(parse_registry_scope).transpose()?;
+            let options = if let Some(s) = scope_filter {
+                RegistryListOptions::new().with_scope(s)
+            } else {
+                RegistryListOptions::new()
+            };
+
+            let entries = cmd.list(&options)?;
+
+            match format {
+                OutputFormat::Table => print_registry_table(&entries),
+                OutputFormat::Json => print_registry_json(&entries)?,
+                OutputFormat::Quiet => {
+                    // Just count - no output unless there are issues
+                    if entries.is_empty() {
+                        println!("No registries configured");
+                    }
+                }
+            }
+        }
+        RegistrySubcommand::Add {
+            name,
+            source,
+            r#type,
+            scope,
+            force,
+        } => {
+            let config_scope = parse_registry_scope(&scope)?;
+            let registry_type = r#type.as_deref().map(parse_registry_type).transpose()?;
+
+            let mut options = RegistryAddOptions::new(&name, &source)
+                .with_scope(config_scope)
+                .with_force(force);
+
+            if let Some(t) = registry_type {
+                options = options.with_type(t);
+            }
+
+            let report = cmd.add(&options)?;
+
+            if report.changed {
+                println!(
+                    "Added registry '{}' ({:?} scope)",
+                    report.name, report.scope
+                );
+            } else {
+                println!("Registry '{}' is already configured", report.name);
+            }
+
+            for warning in &report.warnings {
+                println!("  Warning: {}", warning);
+            }
+        }
+        RegistrySubcommand::Remove { name, scope, all } => {
+            let scope_filter = scope.as_deref().map(parse_registry_scope).transpose()?;
+
+            let mut options = RegistryRemoveOptions::new(&name).with_all_scopes(all);
+
+            if let Some(s) = scope_filter {
+                options = options.with_scope(s);
+            }
+
+            let report = cmd.remove(&options)?;
+
+            println!(
+                "Removed registry '{}' from {:?} scope",
+                report.name, report.scope
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_registry_scope(s: &str) -> Result<ConfigScope> {
+    match s.to_lowercase().as_str() {
+        "global" | "g" => Ok(ConfigScope::Global),
+        "shared" | "project" | "p" => Ok(ConfigScope::PerProjectShared),
+        _ => anyhow::bail!(
+            "Invalid scope for registry: '{}'. Use 'global' or 'shared'",
+            s
+        ),
+    }
+}
+
+fn parse_registry_type(s: &str) -> Result<RegistryType> {
+    match s.to_lowercase().as_str() {
+        "sift" => Ok(RegistryType::Sift),
+        "claude-marketplace" => Ok(RegistryType::ClaudeMarketplace),
+        _ => anyhow::bail!(
+            "Invalid registry type: '{}'. Use 'sift' or 'claude-marketplace'",
+            s
+        ),
+    }
+}
+
+fn print_registry_table(entries: &[RegistryEntry]) {
+    if entries.is_empty() {
+        println!("No registries configured.");
+        println!("Add one with: sift registry add <name> <source>");
+        return;
+    }
+
+    println!("{:<20} {:<20} {:<10} Source", "Name", "Type", "Scope");
+    println!("{}", "-".repeat(70));
+
+    for entry in entries {
+        let type_str = match entry.registry_type {
+            RegistryType::Sift => "sift",
+            RegistryType::ClaudeMarketplace => "claude-marketplace",
+        };
+        let scope_str = match entry.scope {
+            ConfigScope::Global => "global",
+            ConfigScope::PerProjectShared => "shared",
+            ConfigScope::PerProjectLocal => "local",
+        };
+        let source = entry
+            .url
+            .as_deref()
+            .or(entry.source.as_deref())
+            .unwrap_or("-");
+
+        println!(
+            "{:<20} {:<20} {:<10} {}",
+            entry.name, type_str, scope_str, source
+        );
+    }
+}
+
+fn print_registry_json(entries: &[RegistryEntry]) -> Result<()> {
+    let output: Vec<_> = entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "type": match e.registry_type {
+                    RegistryType::Sift => "sift",
+                    RegistryType::ClaudeMarketplace => "claude-marketplace",
+                },
+                "scope": match e.scope {
+                    ConfigScope::Global => "global",
+                    ConfigScope::PerProjectShared => "shared",
+                    ConfigScope::PerProjectLocal => "local",
+                },
+                "url": e.url,
+                "source": e.source,
+            })
+        })
+        .collect();
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -684,5 +908,87 @@ mod tests {
         let result = std::panic::catch_unwind(|| Cli::try_parse_from(args));
         assert!(result.is_ok(), "CLI parsing should not panic");
         assert!(result.unwrap().is_ok(), "CLI parsing should succeed");
+    }
+
+    #[test]
+    fn registry_list_parses_without_panic() {
+        let args = ["sift", "registry", "list"];
+
+        let result = std::panic::catch_unwind(|| Cli::try_parse_from(args));
+        assert!(result.is_ok(), "CLI parsing should not panic");
+        assert!(result.unwrap().is_ok(), "CLI parsing should succeed");
+    }
+
+    #[test]
+    fn registry_list_with_scope_parses() {
+        let args = ["sift", "registry", "list", "--scope", "global"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn registry_add_parses_without_panic() {
+        let args = [
+            "sift",
+            "registry",
+            "add",
+            "official",
+            "https://registry.sift.sh/v1",
+        ];
+
+        let result = std::panic::catch_unwind(|| Cli::try_parse_from(args));
+        assert!(result.is_ok(), "CLI parsing should not panic");
+        assert!(result.unwrap().is_ok(), "CLI parsing should succeed");
+    }
+
+    #[test]
+    fn registry_add_with_type_parses() {
+        let args = [
+            "sift",
+            "registry",
+            "add",
+            "anthropic",
+            "github:anthropics/skills",
+            "--type",
+            "claude-marketplace",
+        ];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn registry_add_with_scope_and_force_parses() {
+        let args = [
+            "sift",
+            "registry",
+            "add",
+            "test-reg",
+            "https://example.com/v1",
+            "--scope",
+            "shared",
+            "--force",
+        ];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn registry_remove_parses_without_panic() {
+        let args = ["sift", "registry", "remove", "official"];
+
+        let result = std::panic::catch_unwind(|| Cli::try_parse_from(args));
+        assert!(result.is_ok(), "CLI parsing should not panic");
+        assert!(result.unwrap().is_ok(), "CLI parsing should succeed");
+    }
+
+    #[test]
+    fn registry_remove_with_all_flag_parses() {
+        let args = ["sift", "registry", "remove", "official", "--all"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
     }
 }
