@@ -757,9 +757,16 @@ pub fn collect_status_with_paths(
             crate::client::SkillDeliveryMode::None => "None".to_string(),
         };
 
+        // Check enabled status from config
+        let enabled = merged_config
+            .clients
+            .get(client.id())
+            .map(|c| c.enabled)
+            .unwrap_or(true);
+
         client_statuses.push(ClientStatus {
             id: client.id().to_string(),
-            enabled: true, // TODO: check config.clients
+            enabled,
             mcp_scopes: mcp_client_scopes,
             skill_scopes: skill_client_scopes,
             supports_symlinks: caps.supports_symlinked_skills,
