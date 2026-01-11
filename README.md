@@ -39,6 +39,10 @@ Sift handles the complexity of heterogeneous runtimes (Node.js, Bun, Python/uv, 
 *   **Command Generation**: Sift translates these requirements into the correct configuration for the target client (e.g., generating the correct `node` or `uv run` commands in `claude_desktop_config.json`).
 *   **User Override**: Users can always override the execution command in `sift.toml` if specific runtime tweaks are needed.
 
+## Requirements
+
+*   **Git 2.25+**: Required for installing skills from Git URLs (sparse checkout).
+
 ## Usage
 
 The `sift` binary provides multiple interfaces depending on your needs:
@@ -52,6 +56,24 @@ The `sift` binary provides multiple interfaces depending on your needs:
 ```bash
 # Install a tool (defaults to Global)
 sift install <tool-name>
+
+# Install with a declared version (registry sources only)
+sift install mcp postgres@1.2.3
+
+# install skill from local path
+sift install skill ./skills/commit
+
+# install skill from Git URL
+sift install skill https://github.com/org/skills/tree/main/skills/gh-fix-ci
+
+# specify source registry when multiple registries can provide the tool
+sift install skill commit --source registry:official/commit
+
+#  explicitly install MCP (stdio + command)
+sift install mcp custom --transport stdio -- npx -y @acme/server
+
+# explicitly install MCP (http + url)
+sift install mcp custom --transport http --url https://mcp.example.com
 
 # Install a tool for the current project (Shared)
 sift install <tool-name> --scope project
@@ -67,3 +89,4 @@ sift export --target vscode
 - [ ] **Manifest**: Define standard schema for MCP/Skill requirements
 - [ ] **Export**: Generators for Claude Desktop & VS Code
 - [ ] **CLI**: Basic install/manage commands
+- [ ] **Git**: Evaluate migration from git CLI to gitoxide for sparse checkout workflows

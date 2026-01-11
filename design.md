@@ -70,6 +70,11 @@ Sift follows a strict "Do No Harm" policy regarding configuration files.
     *   Configuration: `url`, `headers` (supports `${VAR}` expansion).
 3.  **SSE**: Intentionally excluded to keep configuration deterministic.
 
+#### **CLI Explicit Install**
+*   When user provides stdio command (`--transport stdio -- <command>`) or HTTP URL (`--transport http --url <url>`), Sift writes configuration directly without registry resolution.
+*   If `--source` or `name@version` is provided simultaneously, CLI will ignore these parameters and issue a warning.
+*   When only `--env`/`--header` are provided, registry resolution logic is still used.
+
 #### **Heterogeneous Runtimes**
 Sift treats runtimes as first-class citizens.
 *   **Manifest Strategy**: Registries define defaults (e.g., `default_runtime = "docker"`).
@@ -88,6 +93,13 @@ To avoid polluting the system PATH, Sift enforces cache isolation for runtimes:
 *   **Link Mode (`link_mode`)**: Defines how skills are exposed to clients.
     *   **Global Policy**: Set in `sift.toml`.
     *   **Downgrade Strategy**: If a client lacks capability (e.g., doesn't support symlinks), Sift automatically downgrades: `Symlink → Hardlink → Copy`.
+
+#### **Naming & Source Inference**
+*   **Directory Name as Identity**: A skill's directory name must match the `name` in `SKILL.md`, so CLI uses the directory name directly as the skill name when installing from local path, without needing to read `SKILL.md`.
+*   **Local/Git Auto-Detect**: When user provides local path or Git URL, CLI automatically infers `source` as `local:` or `git:`, no longer requiring `--source`.
+*   **Registry Disambiguation**: If multiple registries/marketplaces provide a skill or MCP with the same name and user doesn't explicitly specify `--source`, CLI will warn and require user to make an explicit choice.
+*   **Version Declaration**: Only `name@version` is supported for expressing version constraints (no longer provides `--version`), which is parsed and written to config as declared version.
+*   **Git Requirement**: Installing skills from Git URLs requires Git 2.25+ for sparse checkout.
 
 #### **Lifecycle: Ejection**
 Allows users to modify a managed skill by converting it to a local project file.
@@ -120,6 +132,7 @@ Sift separates **Fetch** (I/O) from **Adapt** (Transform) to handle heterogeneou
 #### **Philosophy: Reproducibility > Freshness**
 *   **Install-Time Snapshot**: `sift add` resolves the **latest** version and **locks** it immediately.
 *   **Explicit Upgrade**: Updates only happen on `sift upgrade`.
+*   **Registry Capabilities**: Registry implementation declares whether it supports historical versions; when not supported, a warning is issued for `name@version` and the version is ignored.
 
 #### **Lockability Matrix**
 | Source | Lockable? | Resolution Strategy |
@@ -204,6 +217,7 @@ Validates the environment:
 1.  **Runtimes**: Checks for `uv`, `node` (suggests `bun` fallback), `docker`.
 2.  **Environment**: WSL checks, permission checks.
 3.  **Connectivity**: Registry reachability.
+4.  **Git**: Validate `git` is installed and version >= 2.25 for Git skill installs.
 
 ### **15. Security & Trust**
 *   **No Sandbox**: Skills run with user privileges.

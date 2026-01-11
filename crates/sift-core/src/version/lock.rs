@@ -158,6 +158,18 @@ pub struct LockedSkill {
     /// Configuration scope where this entry was installed from
     pub scope: ConfigScope,
 
+    /// Git repository URL for git-sourced skills
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_repo: Option<String>,
+
+    /// Git reference (branch/tag) for git-sourced skills
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+
+    /// Git subdirectory for git-sourced skills
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_subdir: Option<String>,
+
     /// Checksum for verification (optional)
     pub checksum: Option<String>,
 
@@ -197,6 +209,9 @@ impl LockedSkill {
             constraint,
             registry,
             scope,
+            git_repo: None,
+            git_ref: None,
+            git_subdir: None,
             checksum: None,
             dst_path: None,
             cache_src_path: None,
@@ -209,6 +224,18 @@ impl LockedSkill {
     /// Set the checksum
     pub fn with_checksum(mut self, checksum: String) -> Self {
         self.checksum = Some(checksum);
+        self
+    }
+
+    pub fn with_git_metadata(
+        mut self,
+        repo: String,
+        reference: Option<String>,
+        subdir: Option<String>,
+    ) -> Self {
+        self.git_repo = Some(repo);
+        self.git_ref = reference;
+        self.git_subdir = subdir;
         self
     }
 

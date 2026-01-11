@@ -5,6 +5,12 @@
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// Registry capability flags declared by implementations
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryCapabilities {
+    pub supports_version_pinning: bool,
+}
+
 /// Registry configuration from sift.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryConfig {

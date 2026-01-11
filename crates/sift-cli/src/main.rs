@@ -10,6 +10,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use sift_core::commands::{InstallCommand, InstallOptions, InstallTarget};
 use sift_core::config::ConfigScope;
 use sift_core::status::{EntryState, McpServerStatus, SkillStatus, SystemStatus, collect_status};
 
@@ -56,6 +57,33 @@ enum Commands {
         kind: String,
         /// Name/ID of the package to install
         name: String,
+        /// Source specification (e.g., "registry:name" or "local:/path")
+        #[arg(long, short)]
+        source: Option<String>,
+        /// Configuration scope (global, shared, local)
+        #[arg(long)]
+        scope: Option<String>,
+        /// Force overwrite existing entries
+        #[arg(long, short)]
+        force: bool,
+        /// Runtime type for MCP servers (node, bun, docker, etc.)
+        #[arg(long, short)]
+        runtime: Option<String>,
+        /// Transport type for MCP servers (stdio or http)
+        #[arg(long)]
+        transport: Option<String>,
+        /// HTTP URL for MCP servers
+        #[arg(long)]
+        url: Option<String>,
+        /// Environment variable for MCP servers (KEY=VALUE)
+        #[arg(long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// HTTP header for MCP servers (KEY=VALUE)
+        #[arg(long, value_name = "KEY=VALUE")]
+        header: Vec<String>,
+        /// Stdio command for MCP servers (after --)
+        #[arg(last = true)]
+        command: Vec<String>,
     },
 
     /// Uninstall an MCP server or skill
@@ -125,8 +153,32 @@ fn run_cli(command: Commands) -> Result<()> {
         } => {
             run_status(scope, global, verify, format, verbose)?;
         }
-        Commands::Install { kind, name } => {
-            println!("Installing {kind}: {name}");
+        Commands::Install {
+            kind,
+            name,
+            source,
+            scope,
+            force,
+            runtime,
+            transport,
+            url,
+            env,
+            header,
+            command,
+        } => {
+            run_install(InstallArgs {
+                kind,
+                name,
+                source,
+                scope,
+                force,
+                runtime,
+                transport,
+                url,
+                env,
+                headers: header,
+                command,
+            })?;
         }
         Commands::Uninstall { kind, name } => {
             println!("Uninstalling {kind}: {name}");
@@ -141,6 +193,131 @@ fn run_cli(command: Commands) -> Result<()> {
         }
     }
     Ok(())
+}
+
+struct InstallArgs {
+    kind: String,
+    name: String,
+    source: Option<String>,
+    scope: Option<String>,
+    force: bool,
+    runtime: Option<String>,
+    transport: Option<String>,
+    url: Option<String>,
+    env: Vec<String>,
+    headers: Vec<String>,
+    command: Vec<String>,
+}
+
+fn run_install(args: InstallArgs) -> Result<()> {
+    // Parse target type
+    let target = match args.kind.to_lowercase().as_str() {
+        "mcp" => InstallTarget::Mcp,
+        "skill" => InstallTarget::Skill,
+        _ => anyhow::bail!("Unknown install type: {}. Use 'mcp' or 'skill'", args.kind),
+    };
+
+    // Parse scope if provided
+    let config_scope = if let Some(s) = &args.scope {
+        Some(parse_scope(s)?)
+    } else {
+        None
+    };
+
+    // Build options
+    let (resolved_name, parsed_version) = split_name_and_version(&args.name)?;
+    let mut options = match target {
+        InstallTarget::Mcp => InstallOptions::mcp(resolved_name),
+        InstallTarget::Skill => InstallOptions::skill(resolved_name),
+    };
+
+    if let Some(s) = &args.source {
+        options = options.with_source(s);
+    }
+    if let Some(v) = parsed_version {
+        options = options.with_version(v);
+    }
+    if let Some(s) = config_scope {
+        options = options.with_scope(s);
+    }
+    if args.force {
+        options = options.with_force(true);
+    }
+    if let Some(r) = &args.runtime {
+        options = options.with_runtime(r);
+    }
+    if let Some(t) = &args.transport {
+        options = options.with_transport(t);
+    }
+    if let Some(u) = &args.url {
+        options = options.with_url(u);
+    }
+    for pair in &args.env {
+        options = options.with_env(pair);
+    }
+    for pair in &args.headers {
+        options = options.with_header(pair);
+    }
+    if !args.command.is_empty() {
+        options = options.with_command(&args.command);
+    }
+
+    // Create and execute install command
+    let cmd = InstallCommand::with_defaults()?;
+    let report = cmd.execute(&options)?;
+
+    // Print result
+    if report.changed {
+        println!("✓ Installed {} '{}'", args.kind, report.name);
+    } else {
+        println!("• {} '{}' is already installed", args.kind, report.name);
+    }
+
+    if report.applied {
+        println!("  Applied to client configurations");
+    }
+
+    for warning in &report.warnings {
+        println!("  ⚠ {}", warning);
+    }
+
+    Ok(())
+}
+
+fn split_name_and_version(input: &str) -> Result<(String, Option<String>)> {
+    if is_local_path(input) || is_git_like(input) {
+        return Ok((input.to_string(), None));
+    }
+
+    let Some(at_pos) = input.rfind('@') else {
+        return Ok((input.to_string(), None));
+    };
+    if at_pos == 0 {
+        return Ok((input.to_string(), None));
+    }
+
+    let (name, version) = input.split_at(at_pos);
+    let version = version.trim_start_matches('@');
+    if version.is_empty() {
+        anyhow::bail!("Invalid version specifier: {}", input);
+    }
+    Ok((name.to_string(), Some(version.to_string())))
+}
+
+fn is_local_path(input: &str) -> bool {
+    input.starts_with("./")
+        || input.starts_with("../")
+        || input.starts_with('/')
+        || input.starts_with("~/")
+}
+
+fn is_git_like(input: &str) -> bool {
+    input.starts_with("http://")
+        || input.starts_with("https://")
+        || input.starts_with("git+")
+        || input.starts_with("github:")
+        || input.starts_with("git:")
+        || input.starts_with("git@")
 }
 
 fn run_status(
@@ -235,7 +412,7 @@ fn print_table(status: &SystemStatus, verbose: bool) {
         let total = status.summary.total_mcp + status.summary.total_skills;
         if status.summary.issues > 0 {
             println!(
-                "Summary: {} entries, {} issues (run 'sift install' to resolve)",
+                "Summary: {} entries, {} issues (run 'sift install <kind> <name>' to resolve)",
                 total, status.summary.issues
             );
         } else {
@@ -443,4 +620,82 @@ fn run_gui() {
     println!("Launching GUI...");
     // The GUI will be implemented in sift-gui crate
     // For now, just stub it
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, split_name_and_version};
+    use clap::Parser;
+
+    #[test]
+    fn parse_name_version_from_simple_name() {
+        let (name, version) = split_name_and_version("demo@1.2.3").unwrap();
+        assert_eq!(name, "demo");
+        assert_eq!(version, Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn parse_name_version_from_scoped_name() {
+        let (name, version) = split_name_and_version("@acme/tool@0.4.0").unwrap();
+        assert_eq!(name, "@acme/tool");
+        assert_eq!(version, Some("0.4.0".to_string()));
+    }
+
+    #[test]
+    fn ignore_version_for_local_path() {
+        let (name, version) = split_name_and_version("./skills/demo@1.0.0").unwrap();
+        assert_eq!(name, "./skills/demo@1.0.0");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn ignore_version_for_git_url() {
+        let (name, version) = split_name_and_version("git@github.com:acme/demo.git").unwrap();
+        assert_eq!(name, "git@github.com:acme/demo.git");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn error_on_empty_version() {
+        let result = split_name_and_version("demo@");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn install_stdio_command_parses_without_panic() {
+        let args = [
+            "sift",
+            "install",
+            "mcp",
+            "custom",
+            "--transport",
+            "stdio",
+            "--",
+            "npx",
+            "-y",
+            "@acme/server",
+        ];
+
+        let result = std::panic::catch_unwind(|| Cli::try_parse_from(args));
+        assert!(result.is_ok(), "CLI parsing should not panic");
+        assert!(result.unwrap().is_ok(), "CLI parsing should succeed");
+    }
+
+    #[test]
+    fn install_http_url_parses_without_panic() {
+        let args = [
+            "sift",
+            "install",
+            "mcp",
+            "custom",
+            "--transport",
+            "http",
+            "--url",
+            "https://mcp.example.com",
+        ];
+
+        let result = std::panic::catch_unwind(|| Cli::try_parse_from(args));
+        assert!(result.is_ok(), "CLI parsing should not panic");
+        assert!(result.unwrap().is_ok(), "CLI parsing should succeed");
+    }
 }

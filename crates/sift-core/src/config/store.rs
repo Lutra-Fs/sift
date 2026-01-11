@@ -10,6 +10,7 @@ use super::{ConfigScope, SiftConfig, parser, paths::config_path_for_scope};
 pub struct ConfigStore {
     scope: ConfigScope,
     config_path: PathBuf,
+    project_root: PathBuf,
 }
 
 impl ConfigStore {
@@ -24,7 +25,11 @@ impl ConfigStore {
 
     pub fn from_paths(scope: ConfigScope, global_dir: PathBuf, project_root: PathBuf) -> Self {
         let config_path = config_path_for_scope(scope, &global_dir, &project_root);
-        Self { scope, config_path }
+        Self {
+            scope,
+            config_path,
+            project_root,
+        }
     }
 
     pub fn scope(&self) -> ConfigScope {
@@ -33,6 +38,10 @@ impl ConfigStore {
 
     pub fn config_path(&self) -> &Path {
         &self.config_path
+    }
+
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
     }
 
     pub fn load(&self) -> anyhow::Result<SiftConfig> {

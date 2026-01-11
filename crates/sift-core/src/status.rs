@@ -449,6 +449,24 @@ pub fn collect_status_with_paths(
         }
     }
 
+    // Then add project-local entries from global config overrides
+    if let Some(ref gc) = global_config
+        && let Some((_key, project_config)) = gc.get_project_config(project_root)
+    {
+        for name in project_config.skill.keys() {
+            skill_scopes.insert(
+                name.clone(),
+                (ConfigScope::PerProjectLocal, global_config_path.clone()),
+            );
+        }
+        for name in project_config.mcp.keys() {
+            mcp_scopes.insert(
+                name.clone(),
+                (ConfigScope::PerProjectLocal, global_config_path.clone()),
+            );
+        }
+    }
+
     // Merge configs for actual entry data (project overrides global)
     let merged_config =
         crate::config::merge_configs(global_config.clone(), project_config.clone(), project_root)?;
@@ -761,7 +779,7 @@ pub fn collect_status_with_paths(
     Ok(SystemStatus {
         project_root: Some(project_root.to_path_buf()),
         scope_filter,
-        link_mode: merged_config.link_mode.unwrap_or(LinkMode::Symlink),
+        link_mode: merged_config.link_mode.unwrap_or(LinkMode::Auto),
         mcp_servers,
         skills,
         clients: client_statuses,
