@@ -6,14 +6,15 @@ use tempfile::TempDir;
 use sift_core::client::ClientAdapter;
 use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
-use sift_core::config::{ConfigScope, ConfigStore, SkillConfigEntry};
+use sift_core::config::{ConfigStore, SkillConfigEntry};
 use sift_core::fs::LinkMode;
 use sift_core::git::GitFetcher;
+use sift_core::lockfile::LockfileService;
 use sift_core::orchestration::orchestrator::InstallOrchestrator;
 use sift_core::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::skills::installer::SkillInstaller;
 use sift_core::source::SourceResolver;
-use sift_core::version::store::LockfileService;
+use sift_core::types::ConfigScope;
 
 fn skill_md(name: &str) -> String {
     format!("---\nname: {name}\ndescription: Test skill for {name}.\n---\n# {name}\n")

@@ -5,15 +5,16 @@ use tempfile::TempDir;
 use sift_core::client::ClientAdapter;
 use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
-use sift_core::config::{ConfigScope, ConfigStore, McpConfigEntry};
+use sift_core::config::{ConfigStore, McpConfigEntry};
 use sift_core::fs::LinkMode;
 use sift_core::git::GitFetcher;
+use sift_core::lockfile::LockfileService;
 use sift_core::mcp::spec::McpResolvedServer;
 use sift_core::orchestration::orchestrator::InstallMcpRequest;
 use sift_core::orchestration::orchestrator::InstallOrchestrator;
 use sift_core::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::source::SourceResolver;
-use sift_core::version::store::LockfileService;
+use sift_core::types::ConfigScope;
 
 #[test]
 fn install_mcp_updates_config_and_writes_project_file() {

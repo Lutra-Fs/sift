@@ -8,6 +8,7 @@ pub mod commands;
 pub mod config;
 pub mod fs;
 pub mod git;
+pub mod lockfile;
 pub mod mcp;
 pub mod orchestration;
 pub mod registry;
@@ -15,6 +16,7 @@ pub mod runtime;
 pub mod skills;
 pub mod source;
 pub mod status;
+pub mod types;
 pub mod version;
 
 /// Re-exports of commonly used types
@@ -27,9 +29,10 @@ pub mod prelude {
 
     // Configuration
     pub use crate::config::{
-        ClientConfigEntry, ConfigManager, ConfigScope, McpConfigEntry, ProjectConfig, SiftConfig,
+        ClientConfigEntry, ConfigManager, McpConfigEntry, ProjectConfig, SiftConfig,
         SkillConfigEntry,
     };
+    pub use crate::types::ConfigScope;
 
     // MCP
     pub use crate::mcp::{McpConfig, McpConfigOverride, McpServer, RuntimeType};
@@ -50,7 +53,6 @@ pub mod prelude {
     pub use crate::registry::{RegistryConfig, RegistryType};
 
     // Version
-    pub use crate::version::{
-        LockedMcpServer, LockedSkill, Lockfile, VersionConstraint, VersionResolver,
-    };
+    pub use crate::lockfile::{LockedMcpServer, LockedSkill, Lockfile};
+    pub use crate::version::{VersionConstraint, VersionResolver};
 }

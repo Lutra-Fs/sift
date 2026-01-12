@@ -13,11 +13,12 @@ use serde_json::Value;
 
 use crate::client::claude_code::ClaudeCodeClient;
 use crate::client::{ClientAdapter, ClientContext, PathRoot};
+use crate::config::SiftConfig;
 use crate::config::schema::{McpConfigEntry, SkillConfigEntry};
-use crate::config::{ConfigScope, SiftConfig};
 use crate::fs::LinkMode;
-use crate::version::lock::{LockedMcpServer, LockedSkill};
-use crate::version::store::{LockfileService, LockfileStore};
+use crate::lockfile::{LockedMcpServer, LockedSkill};
+use crate::lockfile::{LockfileService, LockfileStore};
+use crate::types::ConfigScope;
 
 // =============================================================================
 // Data Structures

@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 use sift_core::commands::{InstallCommand, InstallOptions, UninstallCommand, UninstallOptions};
-use sift_core::config::ConfigScope;
 use sift_core::fs::LinkMode;
-use sift_core::version::store::LockfileStore;
+use sift_core::lockfile::LockfileStore;
+use sift_core::types::ConfigScope;
 
 fn setup_isolated_commands() -> (TempDir, InstallCommand, UninstallCommand) {
     let temp = TempDir::new().expect("Failed to create temp dir");

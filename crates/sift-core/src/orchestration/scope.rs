@@ -1,6 +1,6 @@
 //! Scope resolution for client installs.
 
-use crate::config::ConfigScope;
+use crate::types::ConfigScope;
 
 pub use crate::client::ScopeSupport;
 

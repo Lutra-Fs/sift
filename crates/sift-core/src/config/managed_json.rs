@@ -7,7 +7,7 @@ use anyhow::Context;
 use serde_json::{Map, Value};
 
 use super::ownership::{hash_json, merge_owned_map};
-use crate::version::store::LockfileService;
+use crate::lockfile::LockfileService;
 
 #[derive(Debug)]
 pub struct ManagedJsonResult {

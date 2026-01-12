@@ -8,10 +8,9 @@
 
 use std::collections::HashMap;
 
-use sift_core::config::{
-    ConfigScope, ConfigStore, McpConfigEntry, ProjectConfig, SiftConfig, SkillConfigEntry,
-};
+use sift_core::config::{ConfigStore, McpConfigEntry, ProjectConfig, SiftConfig, SkillConfigEntry};
 use sift_core::orchestration::uninstall::{UninstallOutcome, UninstallService};
+use sift_core::types::ConfigScope;
 use tempfile::TempDir;
 
 /// Creates a temp directory and ConfigStore for testing

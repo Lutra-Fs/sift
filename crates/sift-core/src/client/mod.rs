@@ -7,8 +7,8 @@ use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::config::ConfigScope;
 use crate::mcp::spec::McpResolvedServer;
+use crate::types::ConfigScope;
 
 pub mod claude_code;
 

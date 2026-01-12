@@ -9,14 +9,14 @@ use crate::config::managed_json::apply_managed_entries_in_path;
 use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
 use crate::fs::LinkMode;
 use crate::git::{FetchResult, GitFetcher};
+use crate::lockfile::LockfileService;
+use crate::lockfile::{LockedMcpServer, ResolvedOrigin};
 use crate::orchestration::git_exclude::ensure_git_exclude;
 use crate::orchestration::scope::ScopeResolution;
 use crate::orchestration::uninstall::remove_path_if_exists;
 use crate::orchestration::{InstallOutcome, InstallService};
 use crate::skills::installer::{GitSkillMetadata, SkillInstallResult, SkillInstaller};
 use crate::source::{RegistryMetadata, ResolvedSource, SourceResolver};
-use crate::version::lock::LockedMcpServer;
-use crate::version::store::LockfileService;
 
 #[derive(Debug, Clone)]
 pub struct InstallReport {
@@ -61,6 +61,7 @@ struct PreparedSkillSource {
     constraint: String,
     registry: String,
     git_metadata: Option<GitSkillMetadata>,
+    origin: Option<ResolvedOrigin>,
 }
 
 impl InstallOrchestrator {
@@ -228,6 +229,7 @@ impl InstallOrchestrator {
                     &prepared.registry,
                     decision.scope,
                     prepared.git_metadata,
+                    prepared.origin,
                 )?;
 
                 Ok(SkillInstallReport {
@@ -267,6 +269,7 @@ impl InstallOrchestrator {
                     constraint: "local".to_string(),
                     registry: source.to_string(),
                     git_metadata: None,
+                    origin: None,
                 })
             }
         }
@@ -312,6 +315,7 @@ impl InstallOrchestrator {
             reference: spec.reference.clone(),
             subdir: spec.subdir.clone(),
         });
+        let origin = registry_metadata.as_ref().map(registry_metadata_to_origin);
 
         Ok(PreparedSkillSource {
             cache_dir: fetch_result.cache_dir,
@@ -319,6 +323,7 @@ impl InstallOrchestrator {
             constraint,
             registry,
             git_metadata,
+            origin,
         })
     }
 
@@ -340,6 +345,17 @@ impl InstallOrchestrator {
         // Remove lockfile entry via service
         let _ = self.lockfile_service.remove_skill(name)?;
         Ok(())
+    }
+}
+
+fn registry_metadata_to_origin(metadata: &RegistryMetadata) -> ResolvedOrigin {
+    ResolvedOrigin {
+        original_source: metadata.original_source.clone(),
+        registry_key: metadata.registry_key.clone(),
+        registry_version: Some(metadata.marketplace_version.clone()),
+        aliases: metadata.aliases.clone(),
+        parent: metadata.parent_plugin.clone(),
+        is_group: metadata.is_group,
     }
 }
 

@@ -12,16 +12,17 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 
 use sift_core::config::ownership::hash_json;
-use sift_core::config::{ConfigScope, McpConfigEntry, SiftConfig, SkillConfigEntry};
+use sift_core::config::{McpConfigEntry, SiftConfig, SkillConfigEntry};
 use sift_core::fs::{LinkMode, tree_hash};
+use sift_core::lockfile::LockedMcpServer;
+use sift_core::lockfile::LockfileService;
+use sift_core::lockfile::{LockedSkill, Lockfile};
 use sift_core::status::{
     AggregatedIntegrity, ClientDeployment, DeploymentIntegrity, EntryState, McpServerStatus,
     SkillIntegrity, collect_status, collect_status_with_paths, determine_entry_state,
     verify_mcp_deployment, verify_skill_integrity,
 };
-use sift_core::version::lock::LockedMcpServer;
-use sift_core::version::lock::{LockedSkill, Lockfile};
-use sift_core::version::store::LockfileService;
+use sift_core::types::ConfigScope;
 
 // =============================================================================
 // Test Helpers
@@ -364,20 +365,20 @@ fn aggregated_all_ok_when_all_clients_match() {
         constraint: "^1.0".to_string(),
         resolved_version: Some("1.2.3".to_string()),
         registry: "registry:official".to_string(),
-        scope: sift_core::config::ConfigScope::Global,
+        scope: sift_core::types::ConfigScope::Global,
         source_file: PathBuf::from("~/.config/sift/sift.toml"),
         state: EntryState::Ok,
         deployments: vec![
             ClientDeployment {
                 client_id: "claude-code".to_string(),
                 config_path: PathBuf::from("~/.claude.json"),
-                scope: sift_core::config::ConfigScope::Global,
+                scope: sift_core::types::ConfigScope::Global,
                 integrity: DeploymentIntegrity::Ok,
             },
             ClientDeployment {
                 client_id: "claude-code".to_string(),
                 config_path: PathBuf::from("./.mcp.json"),
-                scope: sift_core::config::ConfigScope::PerProjectShared,
+                scope: sift_core::types::ConfigScope::PerProjectShared,
                 integrity: DeploymentIntegrity::Ok,
             },
         ],
@@ -395,20 +396,20 @@ fn aggregated_partial_when_mixed_status() {
         constraint: "^1.0".to_string(),
         resolved_version: Some("1.2.3".to_string()),
         registry: "registry:official".to_string(),
-        scope: sift_core::config::ConfigScope::Global,
+        scope: sift_core::types::ConfigScope::Global,
         source_file: PathBuf::from("~/.config/sift/sift.toml"),
         state: EntryState::Ok,
         deployments: vec![
             ClientDeployment {
                 client_id: "claude-code".to_string(),
                 config_path: PathBuf::from("~/.claude.json"),
-                scope: sift_core::config::ConfigScope::Global,
+                scope: sift_core::types::ConfigScope::Global,
                 integrity: DeploymentIntegrity::Ok,
             },
             ClientDeployment {
                 client_id: "claude-code".to_string(),
                 config_path: PathBuf::from("./.mcp.json"),
-                scope: sift_core::config::ConfigScope::PerProjectShared,
+                scope: sift_core::types::ConfigScope::PerProjectShared,
                 integrity: DeploymentIntegrity::Modified,
             },
         ],
@@ -429,20 +430,20 @@ fn aggregated_all_failed_when_none_ok() {
         constraint: "^1.0".to_string(),
         resolved_version: Some("1.2.3".to_string()),
         registry: "registry:official".to_string(),
-        scope: sift_core::config::ConfigScope::Global,
+        scope: sift_core::types::ConfigScope::Global,
         source_file: PathBuf::from("~/.config/sift/sift.toml"),
         state: EntryState::Ok,
         deployments: vec![
             ClientDeployment {
                 client_id: "claude-code".to_string(),
                 config_path: PathBuf::from("~/.claude.json"),
-                scope: sift_core::config::ConfigScope::Global,
+                scope: sift_core::types::ConfigScope::Global,
                 integrity: DeploymentIntegrity::Missing,
             },
             ClientDeployment {
                 client_id: "claude-code".to_string(),
                 config_path: PathBuf::from("./.mcp.json"),
-                scope: sift_core::config::ConfigScope::PerProjectShared,
+                scope: sift_core::types::ConfigScope::PerProjectShared,
                 integrity: DeploymentIntegrity::Modified,
             },
         ],
@@ -463,20 +464,20 @@ fn aggregated_excludes_not_deployed() {
         constraint: "^1.0".to_string(),
         resolved_version: Some("1.2.3".to_string()),
         registry: "registry:official".to_string(),
-        scope: sift_core::config::ConfigScope::Global,
+        scope: sift_core::types::ConfigScope::Global,
         source_file: PathBuf::from("~/.config/sift/sift.toml"),
         state: EntryState::Ok,
         deployments: vec![
             ClientDeployment {
                 client_id: "claude-code".to_string(),
                 config_path: PathBuf::from("~/.claude.json"),
-                scope: sift_core::config::ConfigScope::Global,
+                scope: sift_core::types::ConfigScope::Global,
                 integrity: DeploymentIntegrity::Ok,
             },
             ClientDeployment {
                 client_id: "future-client".to_string(),
                 config_path: PathBuf::from("~/.future/config.json"),
-                scope: sift_core::config::ConfigScope::Global,
+                scope: sift_core::types::ConfigScope::Global,
                 integrity: DeploymentIntegrity::NotDeployed,
             },
         ],
@@ -554,7 +555,7 @@ version = "^1.0"
 // 2.0 Phase 2 Integration Tests - Lockfile & Multi-Client
 // =============================================================================
 
-use sift_core::version::store::LockfileStore;
+use sift_core::lockfile::LockfileStore;
 
 /// Test: collect_status with matching lockfile shows Ok state
 #[test]

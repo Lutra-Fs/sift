@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use tempfile::TempDir;
 
+use sift_core::config::SiftConfig;
 use sift_core::config::store::ConfigStore;
-use sift_core::config::{ConfigScope, SiftConfig};
+use sift_core::types::ConfigScope;
 
 #[test]
 fn load_missing_returns_empty_config() {

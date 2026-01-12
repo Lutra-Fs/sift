@@ -16,9 +16,9 @@ use sift_core::commands::{
 use sift_core::commands::{
     RegistryAddOptions, RegistryCommand, RegistryEntry, RegistryListOptions, RegistryRemoveOptions,
 };
-use sift_core::config::ConfigScope;
 use sift_core::registry::RegistryType;
 use sift_core::status::{EntryState, McpServerStatus, SkillStatus, SystemStatus, collect_status};
+use sift_core::types::ConfigScope;
 
 #[derive(Parser)]
 #[command(name = "sift")]

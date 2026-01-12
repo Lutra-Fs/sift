@@ -1,7 +1,7 @@
-use sift_core::config::ConfigScope;
 use sift_core::orchestration::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, ScopeSupport, resolve_scope,
 };
+use sift_core::types::ConfigScope;
 
 #[test]
 fn skills_local_in_git_repo_uses_project_with_exclude() {

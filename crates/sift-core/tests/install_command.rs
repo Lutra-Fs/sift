@@ -3,13 +3,13 @@
 use std::path::Path;
 use std::process::Command;
 
-use sift_core::version::store::LockfileStore;
+use sift_core::lockfile::LockfileStore;
 use tempfile::TempDir;
 use url::Url;
 
 use sift_core::commands::{InstallCommand, InstallOptions};
-use sift_core::config::ConfigScope;
 use sift_core::fs::LinkMode;
+use sift_core::types::ConfigScope;
 use toml::Value;
 
 fn setup_isolated_install_command() -> (TempDir, InstallCommand) {
@@ -125,7 +125,7 @@ fn install_mcp_writes_lockfile() {
 
     let project_root = temp.path().join("project");
     let state_dir = temp.path().join("state").join("locks");
-    let lockfile = sift_core::version::store::LockfileStore::load(Some(project_root), state_dir)
+    let lockfile = sift_core::lockfile::LockfileStore::load(Some(project_root), state_dir)
         .expect("Lockfile should load");
 
     let locked = lockfile

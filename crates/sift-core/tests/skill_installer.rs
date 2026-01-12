@@ -1,10 +1,10 @@
 use std::fs;
 use tempfile::TempDir;
 
-use sift_core::config::ConfigScope;
 use sift_core::fs::LinkMode;
+use sift_core::lockfile::LockfileStore;
 use sift_core::skills::installer::SkillInstaller;
-use sift_core::version::store::LockfileStore;
+use sift_core::types::ConfigScope;
 
 fn skill_md(name: &str) -> String {
     format!("---\nname: {name}\ndescription: Test skill for {name}.\n---\n# {name}\n")
@@ -33,6 +33,7 @@ fn install_skill_updates_lockfile_and_delivery() {
             "latest",
             "registry:test",
             ConfigScope::Global,
+            None,
             None,
         )
         .unwrap();
@@ -70,6 +71,7 @@ fn install_skill_force_overwrites_stale_dst() {
             "registry:test",
             ConfigScope::Global,
             None,
+            None,
         )
         .unwrap();
 
@@ -87,6 +89,7 @@ fn install_skill_force_overwrites_stale_dst() {
             "latest",
             "registry:test",
             ConfigScope::Global,
+            None,
             None,
         )
         .unwrap();
@@ -126,6 +129,7 @@ fn install_skill_force_updates_lockfile_with_new_hash() {
             "registry:test",
             ConfigScope::Global,
             None,
+            None,
         )
         .unwrap();
 
@@ -149,6 +153,7 @@ fn install_skill_force_updates_lockfile_with_new_hash() {
             "latest",
             "registry:test",
             ConfigScope::Global,
+            None,
             None,
         )
         .unwrap();

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use sift_core::config::ConfigScope;
 use sift_core::config::paths::config_path_for_scope;
+use sift_core::types::ConfigScope;
 
 #[test]
 fn global_scope_uses_config_dir() {

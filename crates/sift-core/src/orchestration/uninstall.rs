@@ -7,10 +7,11 @@ use anyhow::Context;
 use serde_json::{Map, Value};
 
 use crate::client::{ClientAdapter, ClientContext};
+use crate::config::ConfigStore;
 use crate::config::managed_json::read_json_map_at_path;
-use crate::config::{ConfigScope, ConfigStore};
+use crate::lockfile::LockfileService;
 use crate::orchestration::orchestrator::resolve_plan_path;
-use crate::version::store::LockfileService;
+use crate::types::ConfigScope;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UninstallOutcome {

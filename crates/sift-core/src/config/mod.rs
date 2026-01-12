@@ -13,7 +13,6 @@ pub mod paths;
 pub mod schema;
 pub mod store;
 
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // Re-export the new module types
@@ -27,16 +26,7 @@ pub use schema::{
 };
 pub use store::ConfigStore;
 
-/// Configuration scope levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ConfigScope {
-    /// Global/system-wide configuration
-    Global,
-    /// Per-project, local (not shared)
-    PerProjectLocal,
-    /// Per-project, shared (e.g., checked into version control)
-    PerProjectShared,
-}
+use crate::types::ConfigScope;
 
 /// Configuration manager
 #[derive(Debug, Clone)]

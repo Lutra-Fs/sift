@@ -4,8 +4,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use sift_core::client::claude_code::{ClaudeCodeMcpWriter, ClaudeCodePaths};
+use sift_core::lockfile::LockfileService;
 use sift_core::mcp::spec::McpResolvedServer;
-use sift_core::version::store::LockfileService;
 
 #[test]
 fn claude_code_project_writer_creates_mcp_json() {
@@ -120,7 +120,7 @@ fn claude_code_apply_scope_routes_to_project() {
 
     writer
         .apply_servers_for_scope(
-            sift_core::config::ConfigScope::PerProjectShared,
+            sift_core::types::ConfigScope::PerProjectShared,
             &servers,
             false,
         )

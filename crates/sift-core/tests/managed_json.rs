@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 use sift_core::config::managed_json::apply_managed_entries;
 use sift_core::config::ownership::hash_json;
-use sift_core::version::store::LockfileService;
+use sift_core::lockfile::LockfileService;
 
 #[test]
 fn apply_managed_entries_preserves_user_entries() {

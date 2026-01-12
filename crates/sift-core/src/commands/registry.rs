@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 
-use crate::config::{ConfigScope, ConfigStore, RegistryConfigEntry};
+use crate::config::{ConfigStore, RegistryConfigEntry};
 use crate::registry::{RegistryConfig, RegistryType};
+use crate::types::ConfigScope;
 
 /// Options for listing registries
 #[derive(Debug, Clone, Default)]

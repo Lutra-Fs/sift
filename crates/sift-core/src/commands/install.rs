@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use crate::client::ClientAdapter;
 use crate::client::ClientContext;
 use crate::client::claude_code::ClaudeCodeClient;
-use crate::config::{ConfigScope, ConfigStore, McpConfigEntry, SkillConfigEntry, merge_configs};
+use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry, merge_configs};
 use crate::fs::LinkMode;
+use crate::lockfile::LockfileService;
 use crate::mcp::spec::McpResolvedServer;
 use crate::orchestration::orchestrator::{InstallMcpRequest, InstallOrchestrator};
 use crate::orchestration::scope::{
@@ -18,7 +19,7 @@ use crate::orchestration::scope::{
 };
 use crate::skills::installer::SkillInstaller;
 use crate::source::SourceResolver;
-use crate::version::store::LockfileService;
+use crate::types::ConfigScope;
 
 /// Default runtime for MCP servers when not specified
 const DEFAULT_RUNTIME: &str = "npx";

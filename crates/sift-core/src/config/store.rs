@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use super::{ConfigScope, SiftConfig, parser, paths::config_path_for_scope};
+use crate::types::ConfigScope;
+
+use super::{SiftConfig, parser, paths::config_path_for_scope};
 
 #[derive(Debug, Clone)]
 pub struct ConfigStore {

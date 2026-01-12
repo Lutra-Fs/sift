@@ -30,7 +30,7 @@ impl InstallService {
     ) -> anyhow::Result<InstallOutcome> {
         let mut config = self.store.load()?;
         let scope = self.store.scope();
-        if scope == crate::config::ConfigScope::PerProjectLocal {
+        if scope == crate::types::ConfigScope::PerProjectLocal {
             let project_key = self.store.project_root().to_string_lossy().to_string();
             let project_override = config.projects.entry(project_key.clone()).or_default();
             project_override.path = self.store.project_root().to_path_buf();
@@ -89,7 +89,7 @@ impl InstallService {
     ) -> anyhow::Result<InstallOutcome> {
         let mut config = self.store.load()?;
         let scope = self.store.scope();
-        if scope == crate::config::ConfigScope::PerProjectLocal {
+        if scope == crate::types::ConfigScope::PerProjectLocal {
             let project_key = self.store.project_root().to_string_lossy().to_string();
             let project_override = config.projects.entry(project_key.clone()).or_default();
             project_override.path = self.store.project_root().to_path_buf();

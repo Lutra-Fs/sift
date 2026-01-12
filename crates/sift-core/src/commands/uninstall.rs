@@ -6,11 +6,12 @@ use std::path::PathBuf;
 
 use crate::client::claude_code::ClaudeCodeClient;
 use crate::client::{ClientAdapter, ClientContext};
-use crate::config::{ConfigScope, ConfigStore, merge_configs};
+use crate::config::{ConfigStore, merge_configs};
 use crate::fs::LinkMode;
+use crate::lockfile::{LockfileService, LockfileStore};
 use crate::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use crate::orchestration::uninstall::UninstallOrchestrator;
-use crate::version::store::{LockfileService, LockfileStore};
+use crate::types::ConfigScope;
 
 /// What to uninstall: MCP server or skill
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,7 +255,7 @@ impl UninstallCommand {
     fn resolve_scopes(
         &self,
         options: &UninstallOptions,
-        lockfile: &crate::version::lock::Lockfile,
+        lockfile: &crate::lockfile::Lockfile,
     ) -> anyhow::Result<Vec<ConfigScope>> {
         match options.scope {
             UninstallScope::All => Ok(all_scopes()),
@@ -341,7 +342,7 @@ impl UninstallCommand {
         )
     }
 
-    fn load_lockfile(&self) -> anyhow::Result<crate::version::lock::Lockfile> {
+    fn load_lockfile(&self) -> anyhow::Result<crate::lockfile::Lockfile> {
         LockfileStore::load(
             Some(self.project_root.clone()),
             self.state_dir.join("locks"),
@@ -366,7 +367,7 @@ fn target_label(target: UninstallTarget) -> &'static str {
 
 fn scope_from_lockfile(
     options: &UninstallOptions,
-    lockfile: &crate::version::lock::Lockfile,
+    lockfile: &crate::lockfile::Lockfile,
 ) -> Option<ConfigScope> {
     match options.target {
         UninstallTarget::Mcp => lockfile

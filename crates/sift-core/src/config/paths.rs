@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::ConfigScope;
+use crate::types::ConfigScope;
 
 pub fn config_path_for_scope(
     scope: ConfigScope,

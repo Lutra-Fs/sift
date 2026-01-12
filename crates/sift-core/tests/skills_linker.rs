@@ -3,10 +3,10 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use sift_core::config::ConfigScope;
 use sift_core::fs::tree_hash::hash_tree;
+use sift_core::lockfile::LockedSkill;
 use sift_core::skills::linker::{LinkMode, LinkerOptions, deliver_dir_managed};
-use sift_core::version::LockedSkill;
+use sift_core::types::ConfigScope;
 
 fn write_file(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {

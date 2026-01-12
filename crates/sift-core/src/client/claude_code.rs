@@ -8,10 +8,10 @@ use crate::client::{
     ClientAdapter, ClientCapabilities, ClientContext, ManagedJsonPlan, McpConfigFormat, PathRoot,
     ScopeSupport, SkillDeliveryMode, SkillDeliveryPlan,
 };
-use crate::config::ConfigScope;
 use crate::config::managed_json::{apply_managed_entries_in_field, apply_managed_entries_in_path};
+use crate::lockfile::LockfileService;
 use crate::mcp::spec::{McpResolvedServer, McpTransport};
-use crate::version::store::LockfileService;
+use crate::types::ConfigScope;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudeCodeScope {

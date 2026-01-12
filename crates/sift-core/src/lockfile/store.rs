@@ -8,7 +8,7 @@ use serde_json;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::version::lock::Lockfile;
+use crate::lockfile::Lockfile;
 
 /// Lockfile storage and persistence
 ///
@@ -189,7 +189,7 @@ impl LockfileService {
     pub fn add_mcp(
         &self,
         name: &str,
-        server: crate::version::lock::LockedMcpServer,
+        server: crate::lockfile::LockedMcpServer,
     ) -> anyhow::Result<()> {
         let mut lockfile = self.load()?;
         lockfile.add_mcp_server(name.to_string(), server);
@@ -209,20 +209,13 @@ impl LockfileService {
     }
 
     /// Get an MCP server entry.
-    pub fn get_mcp(
-        &self,
-        name: &str,
-    ) -> anyhow::Result<Option<crate::version::lock::LockedMcpServer>> {
+    pub fn get_mcp(&self, name: &str) -> anyhow::Result<Option<crate::lockfile::LockedMcpServer>> {
         let lockfile = self.load()?;
         Ok(lockfile.get_mcp_server(name).cloned())
     }
 
     /// Add or update a skill entry.
-    pub fn add_skill(
-        &self,
-        name: &str,
-        skill: crate::version::lock::LockedSkill,
-    ) -> anyhow::Result<()> {
+    pub fn add_skill(&self, name: &str, skill: crate::lockfile::LockedSkill) -> anyhow::Result<()> {
         let mut lockfile = self.load()?;
         lockfile.add_skill(name.to_string(), skill);
         self.save(&lockfile)
@@ -241,10 +234,7 @@ impl LockfileService {
     }
 
     /// Get a skill entry.
-    pub fn get_skill(
-        &self,
-        name: &str,
-    ) -> anyhow::Result<Option<crate::version::lock::LockedSkill>> {
+    pub fn get_skill(&self, name: &str) -> anyhow::Result<Option<crate::lockfile::LockedSkill>> {
         let lockfile = self.load()?;
         Ok(lockfile.get_skill(name).cloned())
     }
@@ -332,8 +322,8 @@ mod tests {
         fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
 
         let mut lockfile = Lockfile::new();
-        use crate::config::ConfigScope;
-        use crate::version::lock::LockedMcpServer;
+        use crate::lockfile::LockedMcpServer;
+        use crate::types::ConfigScope;
         let server = LockedMcpServer::new(
             "test-server".to_string(),
             "1.0.0".to_string(),
@@ -477,8 +467,8 @@ mod tests {
 
         let service = LockfileService::new(store_dir, Some(project_dir));
 
-        use crate::config::ConfigScope;
-        use crate::version::lock::LockedMcpServer;
+        use crate::lockfile::LockedMcpServer;
+        use crate::types::ConfigScope;
         let server = LockedMcpServer::new(
             "my-server".to_string(),
             "1.0.0".to_string(),
@@ -507,8 +497,8 @@ mod tests {
 
         let service = LockfileService::new(store_dir, Some(project_dir));
 
-        use crate::config::ConfigScope;
-        use crate::version::lock::LockedMcpServer;
+        use crate::lockfile::LockedMcpServer;
+        use crate::types::ConfigScope;
         let server = LockedMcpServer::new(
             "my-server".to_string(),
             "1.0.0".to_string(),
@@ -544,8 +534,8 @@ mod tests {
 
         let service = LockfileService::new(store_dir, Some(project_dir));
 
-        use crate::config::ConfigScope;
-        use crate::version::lock::LockedSkill;
+        use crate::lockfile::LockedSkill;
+        use crate::types::ConfigScope;
         let skill = LockedSkill::new(
             "my-skill".to_string(),
             "abc123".to_string(),
@@ -576,8 +566,8 @@ mod tests {
 
         let service = LockfileService::new(store_dir, Some(project_dir));
 
-        use crate::config::ConfigScope;
-        use crate::version::lock::LockedSkill;
+        use crate::lockfile::LockedSkill;
+        use crate::types::ConfigScope;
         let skill = LockedSkill::new(
             "my-skill".to_string(),
             "abc123".to_string(),
@@ -679,8 +669,8 @@ mod tests {
 
         let service = LockfileService::new(store_dir, Some(project_dir));
 
-        use crate::config::ConfigScope;
-        use crate::version::lock::{LockedMcpServer, LockedSkill};
+        use crate::lockfile::{LockedMcpServer, LockedSkill};
+        use crate::types::ConfigScope;
 
         service
             .modify(|lockfile| {

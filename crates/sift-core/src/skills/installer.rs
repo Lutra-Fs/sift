@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::config::ConfigScope;
 use crate::fs::{LinkMode, hash_tree};
+use crate::lockfile::LockfileService;
+use crate::lockfile::{LockedSkill, ResolvedOrigin};
 use crate::skills::linker::{LinkerOptions, deliver_dir_managed};
-use crate::version::lock::LockedSkill;
-use crate::version::store::LockfileService;
+use crate::types::ConfigScope;
 
 #[derive(Debug)]
 pub struct SkillInstallResult {
@@ -53,6 +53,7 @@ impl SkillInstaller {
         registry: &str,
         scope: ConfigScope,
         git_metadata: Option<GitSkillMetadata>,
+        origin: Option<ResolvedOrigin>,
     ) -> anyhow::Result<SkillInstallResult> {
         let cache_hash = hash_tree(cache_dir)
             .with_context(|| format!("Failed to hash cache: {}", cache_dir.display()))?;
@@ -88,6 +89,9 @@ impl SkillInstaller {
             report.mode,
             cache_hash,
         );
+        if let Some(origin) = origin {
+            locked = locked.with_origin(origin);
+        }
         if let Some(metadata) = git_metadata {
             locked = locked.with_git_metadata(metadata.repo, metadata.reference, metadata.subdir);
         }
