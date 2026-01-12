@@ -1,9 +1,7 @@
 //! Integration tests for the install command
 
-use std::path::Path;
-use std::process::Command;
-
 use sift_core::lockfile::LockfileStore;
+use std::path::Path;
 use tempfile::TempDir;
 use url::Url;
 
@@ -11,6 +9,9 @@ use sift_core::commands::{InstallCommand, InstallOptions};
 use sift_core::fs::LinkMode;
 use sift_core::types::ConfigScope;
 use toml::Value;
+
+mod support;
+use support::git::git_command;
 
 fn setup_isolated_install_command() -> (TempDir, InstallCommand) {
     let temp = TempDir::new().expect("Failed to create temp dir");
@@ -39,7 +40,7 @@ fn write_skill_dir(root: &std::path::Path, relative: &str, name: &str) {
 }
 
 fn run_git(repo: &std::path::Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = git_command()
         .args(args)
         .current_dir(repo)
         .status()
@@ -48,7 +49,7 @@ fn run_git(repo: &std::path::Path, args: &[&str]) {
 }
 
 fn git_rev_parse(repo: &Path, rev: &str) -> String {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["rev-parse", rev])
         .current_dir(repo)
         .output()

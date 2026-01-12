@@ -106,8 +106,51 @@ mod git_fetcher_tests {
     use std::process::Command;
     use tempfile::TempDir;
 
+    const GIT_ENV_OVERRIDES: [&str; 4] = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+    ];
+
+    struct EnvGuard {
+        entries: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let entries = keys
+                .iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect();
+            Self { entries }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.entries.drain(..) {
+                if let Some(value) = value {
+                    // SAFETY: Tests are single-process and restore env after running.
+                    unsafe { std::env::set_var(key, value) };
+                } else {
+                    // SAFETY: Tests are single-process and restore env after running.
+                    unsafe { std::env::remove_var(key) };
+                }
+            }
+        }
+    }
+
+    fn git_command() -> Command {
+        let mut cmd = Command::new("git");
+        for key in GIT_ENV_OVERRIDES {
+            cmd.env_remove(key);
+        }
+        cmd
+    }
+
     fn run_git(repo: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = git_command()
             .args(args)
             .current_dir(repo)
             .status()
@@ -141,7 +184,7 @@ mod git_fetcher_tests {
     }
 
     fn git_rev_parse(repo: &Path, rev: &str) -> String {
-        let output = Command::new("git")
+        let output = git_command()
             .args(["rev-parse", rev])
             .current_dir(repo)
             .output()
@@ -158,6 +201,41 @@ mod git_fetcher_tests {
             result.is_ok(),
             "Git version check should succeed: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn init_repo_ignores_git_env_overrides() {
+        let temp = TempDir::new().expect("Failed to create temp dir");
+        let repo_root = temp.path().join("repo");
+        let _guard = EnvGuard::new(&[
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+        ]);
+
+        let git_dir = temp.path().join("git-dir-file");
+        std::fs::write(&git_dir, "not-a-dir").expect("Failed to write git-dir-file");
+
+        let git_index = temp.path().join("git-index-file");
+        std::fs::write(&git_index, "not-an-index").expect("Failed to write git-index-file");
+
+        // SAFETY: Tests are single-process and restore env after running.
+        unsafe {
+            std::env::set_var("GIT_DIR", &git_dir);
+            std::env::set_var("GIT_WORK_TREE", temp.path().join("bogus-worktree"));
+            std::env::set_var("GIT_INDEX_FILE", &git_index);
+            std::env::set_var("GIT_COMMON_DIR", temp.path().join("bogus-common-dir"));
+        }
+
+        let result = std::panic::catch_unwind(|| {
+            init_test_repo(&repo_root, "skills/test-skill", "test-skill");
+        });
+
+        assert!(
+            result.is_ok(),
+            "init_test_repo should ignore GIT_* env overrides"
         );
     }
 

@@ -1086,6 +1086,21 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
+    const GIT_ENV_OVERRIDES: [&str; 4] = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+    ];
+
+    fn git_command() -> Command {
+        let mut cmd = Command::new("git");
+        for key in GIT_ENV_OVERRIDES {
+            cmd.env_remove(key);
+        }
+        cmd
+    }
+
     fn setup_test_env() -> (TempDir, InstallCommand) {
         let temp = TempDir::new().unwrap();
         let home = temp.path().join("home");
@@ -1126,7 +1141,7 @@ source = "github:anthropics/skills"
     }
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = git_command()
             .args(args)
             .current_dir(dir)
             .status()

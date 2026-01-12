@@ -7,6 +7,13 @@ use anyhow::Context;
 
 use super::GitSpec;
 
+const GIT_ENV_OVERRIDES: [&str; 4] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+];
+
 /// Result of a successful fetch operation.
 #[derive(Debug, Clone)]
 pub struct FetchResult {
@@ -35,7 +42,7 @@ impl GitFetcher {
 
     /// Ensure git version is 2.25+ (required for sparse checkout).
     pub fn ensure_git_version() -> anyhow::Result<()> {
-        let output = Command::new("git")
+        let output = Self::git_command()
             .arg("--version")
             .output()
             .context("Failed to invoke git --version")?;
@@ -123,7 +130,7 @@ impl GitFetcher {
             file_path.to_string()
         };
 
-        let output = Command::new("git")
+        let output = Self::git_command()
             .args(["show", &format!("{}:{}", commit, full_path)])
             .current_dir(&bare_dir)
             .output()
@@ -146,7 +153,7 @@ impl GitFetcher {
         let bare_dir = self.ensure_bare_repo(spec, false)?;
         let commit = self.resolve_commit(&bare_dir, spec, false)?;
 
-        let output = Command::new("git")
+        let output = Self::git_command()
             .args(["show", &format!("{}:{}", commit, file_path)])
             .current_dir(&bare_dir)
             .output()
@@ -395,7 +402,7 @@ impl GitFetcher {
 
     /// Run a git command.
     fn run_git(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
-        let mut cmd = Command::new("git");
+        let mut cmd = Self::git_command();
         cmd.args(args);
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -412,7 +419,7 @@ impl GitFetcher {
 
     /// Run git rev-parse and return the result.
     fn git_rev_parse(cwd: Option<&Path>, rev: &str) -> anyhow::Result<String> {
-        let mut cmd = Command::new("git");
+        let mut cmd = Self::git_command();
         cmd.args(["rev-parse", rev]);
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -452,5 +459,13 @@ impl GitFetcher {
             }
         }
         Ok(())
+    }
+
+    fn git_command() -> Command {
+        let mut cmd = Command::new("git");
+        for key in GIT_ENV_OVERRIDES {
+            cmd.env_remove(key);
+        }
+        cmd
     }
 }

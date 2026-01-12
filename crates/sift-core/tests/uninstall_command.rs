@@ -9,6 +9,9 @@ use sift_core::fs::LinkMode;
 use sift_core::lockfile::LockfileStore;
 use sift_core::types::ConfigScope;
 
+mod support;
+use support::git::git_command;
+
 fn setup_isolated_commands() -> (TempDir, InstallCommand, UninstallCommand) {
     let temp = TempDir::new().expect("Failed to create temp dir");
     let home = temp.path().join("home");
@@ -48,7 +51,7 @@ fn write_skill_dir(root: &std::path::Path, relative: &str, name: &str) {
 }
 
 fn run_git(repo: &std::path::Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
+    let status = git_command()
         .args(args)
         .current_dir(repo)
         .status()

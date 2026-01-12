@@ -806,6 +806,176 @@ fn resolve_plan_path(ctx: &ClientContext, root: PathRoot, relative: &Path) -> Pa
     base.join(relative)
 }
 
+// =============================================================================
+// Command API
+// =============================================================================
+
+/// Report from a status operation (alias for SystemStatus for consistency)
+pub type StatusReport = SystemStatus;
+
+/// Options for the status command
+#[derive(Debug, Clone, Default)]
+pub struct StatusOptions {
+    /// Scope filter
+    pub scope: Option<ConfigScope>,
+    /// Verify file integrity
+    pub verify: bool,
+}
+
+impl StatusOptions {
+    /// Create new status options with defaults
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the scope filter
+    pub fn with_scope(mut self, scope: ConfigScope) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    /// Set the verify flag
+    pub fn with_verify(mut self, verify: bool) -> Self {
+        self.verify = verify;
+        self
+    }
+}
+
+/// Status command
+#[derive(Debug)]
+pub struct StatusCommand {
+    /// Home directory (reserved for future use)
+    _home_dir: PathBuf,
+    /// Project root directory
+    project_root: PathBuf,
+    /// State directory for lockfiles
+    state_dir: PathBuf,
+    /// Global config directory
+    global_config_dir: PathBuf,
+    /// Link mode for skills (reserved for future use)
+    _link_mode: LinkMode,
+}
+
+impl StatusCommand {
+    /// Create a new status command
+    pub fn new(
+        home_dir: PathBuf,
+        project_root: PathBuf,
+        state_dir: PathBuf,
+        global_config_dir: PathBuf,
+        link_mode: LinkMode,
+    ) -> Self {
+        Self {
+            _home_dir: home_dir,
+            project_root,
+            state_dir,
+            global_config_dir,
+            _link_mode: link_mode,
+        }
+    }
+
+    /// Create a status command with default paths
+    pub fn with_defaults() -> anyhow::Result<Self> {
+        let home_dir = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let project_root = std::env::current_dir()?;
+        let state_dir = dirs::state_dir()
+            .or_else(dirs::data_local_dir)
+            .ok_or_else(|| anyhow::anyhow!("Could not determine state directory"))?
+            .join("sift");
+        let global_config_dir = dirs::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
+            .join("sift");
+
+        // Load config to determine link mode
+        let global_config_path = global_config_dir.join("sift.toml");
+        let project_config_path = project_root.join("sift.toml");
+
+        let link_mode = if global_config_path.exists() || project_config_path.exists() {
+            let global_config = if global_config_path.exists() {
+                let content = std::fs::read_to_string(&global_config_path)?;
+                Some(toml::from_str::<SiftConfig>(&content)?)
+            } else {
+                None
+            };
+
+            let project_config = if project_config_path.exists() {
+                let content = std::fs::read_to_string(&project_config_path)?;
+                Some(toml::from_str::<SiftConfig>(&content)?)
+            } else {
+                None
+            };
+
+            let merged =
+                crate::config::merge_configs(global_config, project_config, &project_root)?;
+            merged.link_mode.unwrap_or(LinkMode::Auto)
+        } else {
+            LinkMode::Auto
+        };
+
+        Ok(Self {
+            _home_dir: home_dir,
+            project_root,
+            state_dir,
+            global_config_dir,
+            _link_mode: link_mode,
+        })
+    }
+
+    /// Create a status command with explicit paths (for testing)
+    pub fn with_defaults_from_paths(
+        home_dir: PathBuf,
+        project_root: PathBuf,
+        state_dir: PathBuf,
+        global_config_dir: PathBuf,
+    ) -> anyhow::Result<Self> {
+        // Load config to determine link mode
+        let global_config_path = global_config_dir.join("sift.toml");
+        let project_config_path = project_root.join("sift.toml");
+
+        let link_mode = if global_config_path.exists() || project_config_path.exists() {
+            let global_config = if global_config_path.exists() {
+                let content = std::fs::read_to_string(&global_config_path)?;
+                Some(toml::from_str::<SiftConfig>(&content)?)
+            } else {
+                None
+            };
+
+            let project_config = if project_config_path.exists() {
+                let content = std::fs::read_to_string(&project_config_path)?;
+                Some(toml::from_str::<SiftConfig>(&content)?)
+            } else {
+                None
+            };
+
+            let merged =
+                crate::config::merge_configs(global_config, project_config, &project_root)?;
+            merged.link_mode.unwrap_or(LinkMode::Auto)
+        } else {
+            LinkMode::Auto
+        };
+
+        Ok(Self {
+            _home_dir: home_dir,
+            project_root,
+            state_dir,
+            global_config_dir,
+            _link_mode: link_mode,
+        })
+    }
+
+    /// Execute the status command
+    pub fn execute(&self, options: &StatusOptions) -> anyhow::Result<StatusReport> {
+        collect_status_with_paths(
+            &self.project_root,
+            &self.global_config_dir,
+            &self.state_dir,
+            options.scope,
+            options.verify,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,3 +16,6 @@ pub use registry::{
 pub use uninstall::{
     UninstallCommand, UninstallOptions, UninstallReport, UninstallScope, UninstallTarget,
 };
+
+// Re-export status command types from the status module
+pub use crate::status::{StatusCommand, StatusOptions, StatusReport};

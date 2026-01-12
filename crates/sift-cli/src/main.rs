@@ -11,13 +11,14 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use sift_core::commands::{
-    InstallCommand, InstallOptions, InstallTarget, UninstallCommand, UninstallOptions,
+    InstallCommand, InstallOptions, InstallTarget, StatusCommand, StatusOptions, UninstallCommand,
+    UninstallOptions,
 };
 use sift_core::commands::{
     RegistryAddOptions, RegistryCommand, RegistryEntry, RegistryListOptions, RegistryRemoveOptions,
 };
 use sift_core::registry::RegistryType;
-use sift_core::status::{EntryState, McpServerStatus, SkillStatus, SystemStatus, collect_status};
+use sift_core::status::{EntryState, McpServerStatus, SkillStatus, SystemStatus};
 use sift_core::types::ConfigScope;
 
 #[derive(Parser)]
@@ -600,18 +601,22 @@ fn run_status(
         None
     };
 
-    // Detect project root (current directory)
-    let project_root = std::env::current_dir()?;
+    // Build status options
+    let mut options = StatusOptions::new().with_verify(verify);
+    if let Some(scope) = scope_filter {
+        options = options.with_scope(scope);
+    }
 
-    // Collect status
-    let status = collect_status(&project_root, scope_filter, verify)?;
+    // Collect status using the command pattern
+    let cmd = StatusCommand::with_defaults()?;
+    let report = cmd.execute(&options)?;
 
     // Output based on format
     match format {
-        OutputFormat::Table => print_table(&status, verbose),
-        OutputFormat::Json => print_json(&status)?,
+        OutputFormat::Table => print_table(&report, verbose),
+        OutputFormat::Json => print_json(&report)?,
         OutputFormat::Quiet => {
-            let exit_code = print_quiet(&status);
+            let exit_code = print_quiet(&report);
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }
