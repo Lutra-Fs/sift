@@ -1,6 +1,5 @@
 //! Install/update/remove orchestration for config entries.
 
-pub mod git_exclude;
 pub mod install;
 pub mod scope;
 pub mod service;

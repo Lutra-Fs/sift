@@ -5,9 +5,11 @@
 //! - Reading files from bare repos (e.g., marketplace.json)
 //! - Managing bare repo lifecycle
 
+mod exclude;
 mod fetcher;
 mod spec;
 
+pub use exclude::ensure_git_exclude;
 pub use fetcher::{FetchResult, GitFetcher};
 pub use spec::GitSpec;
 

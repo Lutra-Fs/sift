@@ -2,7 +2,7 @@ use std::fs;
 
 use tempfile::TempDir;
 
-use sift_core::orchestration::git_exclude::ensure_git_exclude;
+use sift_core::git::ensure_git_exclude;
 
 #[test]
 fn ensure_git_exclude_creates_file_and_adds_entry() {
