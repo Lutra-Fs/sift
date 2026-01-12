@@ -155,12 +155,106 @@ impl SourceResolver {
 
         match config.r#type {
             RegistryType::ClaudeMarketplace => {
-                self.resolve_claude_marketplace(config, &registry_key, skill_name)
+                if let Some((parent, child)) = skill_name.split_once('/') {
+                    self.resolve_claude_marketplace_nested(config, &registry_key, parent, child)
+                } else {
+                    self.resolve_claude_marketplace(config, &registry_key, skill_name)
+                }
             }
             RegistryType::Sift => {
                 anyhow::bail!("Sift registry resolution not yet implemented")
             }
         }
+    }
+
+    fn resolve_claude_marketplace_nested(
+        &self,
+        config: &RegistryConfig,
+        registry_key: &str,
+        parent: &str,
+        child: &str,
+    ) -> anyhow::Result<RegistryResolution> {
+        let marketplace_source = config
+            .source
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Marketplace registry missing source field"))?;
+
+        let marketplace_spec = GitSpec::parse(marketplace_source)?;
+
+        let fetcher = GitFetcher::new(self.state_dir.clone());
+        let manifest_content = fetcher
+            .read_root_file(&marketplace_spec, ".claude-plugin/marketplace.json")
+            .with_context(|| {
+                format!(
+                    "Failed to read .claude-plugin/marketplace.json from {}",
+                    marketplace_source
+                )
+            })?;
+
+        let manifest = MarketplaceAdapter::parse(&manifest_content)?;
+        let plugin = MarketplaceAdapter::find_plugin(&manifest, parent)
+            .ok_or_else(|| anyhow::anyhow!("Plugin not found in registry: {}", parent))?;
+
+        let base_source = MarketplaceAdapter::get_source_string(plugin)?;
+        let skill_paths = match &plugin.skills {
+            Some(crate::registry::marketplace::adapter::SkillsOrPaths::Single(path)) => {
+                vec![path.as_str()]
+            }
+            Some(crate::registry::marketplace::adapter::SkillsOrPaths::Multiple(paths)) => {
+                paths.iter().map(|p| p.as_str()).collect()
+            }
+            None => {
+                anyhow::bail!(
+                    "Plugin '{}' does not define nested skills for registry source '{}'",
+                    parent,
+                    child
+                );
+            }
+        };
+
+        let matched_path = skill_paths
+            .iter()
+            .find(|path| {
+                let trimmed = path.trim_start_matches("./");
+                let leaf = trimmed.split('/').next_back().unwrap_or(trimmed);
+                leaf == child
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Plugin '{}' does not contain skill path '{}'",
+                    parent,
+                    child
+                )
+            })?;
+
+        let actual_source = if matched_path.starts_with("./") {
+            format!(
+                "{}/{}",
+                base_source.trim_end_matches('/'),
+                matched_path.trim_start_matches("./")
+            )
+        } else if matched_path.starts_with('/') {
+            matched_path.to_string()
+        } else {
+            format!("{}/{}", base_source, matched_path)
+        };
+
+        let git_spec =
+            self.plugin_source_to_git_spec(&actual_source, &marketplace_spec, marketplace_source)?;
+
+        let canonical_name = format!("{}/{}", parent, child);
+        Ok(RegistryResolution {
+            git_spec,
+            metadata: RegistryMetadata {
+                original_source: format!("registry:{}/{}", registry_key, canonical_name),
+                registry_key: registry_key.to_string(),
+                skill_name: canonical_name.clone(),
+                marketplace_version: plugin.version.clone(),
+                aliases: vec![child.to_string(), canonical_name],
+                parent_plugin: Some(parent.to_string()),
+                is_group: false,
+            },
+        })
     }
 
     /// Resolve a Claude Marketplace registry source.

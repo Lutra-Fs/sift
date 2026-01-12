@@ -34,7 +34,7 @@ pub struct SiftConfig {
     pub registry: HashMap<String, RegistryConfigEntry>,
 
     /// Project-local configuration (ONLY valid in global config)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub projects: HashMap<String, ProjectConfig>,
 }
 

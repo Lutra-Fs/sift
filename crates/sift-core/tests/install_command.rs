@@ -925,6 +925,65 @@ fn create_marketplace_repo(temp: &std::path::Path, plugins: &[(&str, &str)]) -> 
         .to_string()
 }
 
+fn create_marketplace_repo_with_group(
+    temp: &std::path::Path,
+    group_name: &str,
+    skills: &[(&str, &str)],
+) -> String {
+    let repo_root = temp.join(format!("marketplace-{}", group_name));
+    std::fs::create_dir_all(&repo_root).expect("Failed to create repo dir");
+    run_git(&repo_root, &["init"]);
+    run_git(&repo_root, &["checkout", "-b", "main"]);
+    run_git(&repo_root, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_root, &["config", "user.name", "Test User"]);
+    run_git(&repo_root, &["config", "commit.gpgsign", "false"]);
+
+    let skill_entries: Vec<String> = skills
+        .iter()
+        .map(|(name, path)| {
+            let skill_dir = repo_root.join(path);
+            std::fs::create_dir_all(&skill_dir).expect("Failed to create skill dir");
+            let content = format!(
+                "---\nname: {}\ndescription: Test skill\n---\n\nTest instructions.\n",
+                name
+            );
+            std::fs::write(skill_dir.join("SKILL.md"), content).expect("Failed to write SKILL.md");
+            format!("\"./{}\"", path)
+        })
+        .collect();
+
+    let plugin_entry = format!(
+        r#"{{
+            "name": "{}",
+            "description": "Test plugin group",
+            "version": "1.0.0",
+            "source": "./",
+            "skills": [{}]
+        }}"#,
+        group_name,
+        skill_entries.join(",")
+    );
+
+    let marketplace_json = format!(
+        r#"{{
+            "marketplace": {{"name": "test-marketplace"}},
+            "plugins": [{}]
+        }}"#,
+        plugin_entry
+    );
+    let marketplace_dir = repo_root.join(".claude-plugin");
+    std::fs::create_dir_all(&marketplace_dir).expect("Failed to create marketplace dir");
+    std::fs::write(marketplace_dir.join("marketplace.json"), marketplace_json)
+        .expect("Failed to write marketplace.json");
+
+    run_git(&repo_root, &["add", "."]);
+    run_git(&repo_root, &["commit", "-m", "init"]);
+
+    Url::from_directory_path(&repo_root)
+        .expect("repo root should convert to file URL")
+        .to_string()
+}
+
 #[test]
 fn install_skill_from_registry_source_fetches_content() {
     let (temp, cmd) = setup_isolated_install_command();
@@ -964,6 +1023,48 @@ source = "git:{}"
     // Verify content was fetched correctly
     let content = std::fs::read_to_string(&installed).expect("Should read SKILL.md");
     assert!(content.contains("name: pdf-skill"));
+}
+
+#[test]
+fn install_skill_group_from_registry_expands_skills_array() {
+    let (temp, cmd) = setup_isolated_install_command();
+    let project_root = temp.path().join("project");
+
+    let skills = [
+        ("xlsx", "skills/xlsx"),
+        ("docx", "skills/docx"),
+        ("pptx", "skills/pptx"),
+        ("pdf", "skills/pdf"),
+    ];
+    let marketplace_url =
+        create_marketplace_repo_with_group(temp.path(), "document-skills", &skills);
+
+    let global_config_path = temp.path().join("config").join("sift.toml");
+    let global_config = format!(
+        r#"
+[registry.test-marketplace]
+type = "claude-marketplace"
+source = "git:{}"
+"#,
+        marketplace_url.trim_end_matches('/')
+    );
+    std::fs::write(&global_config_path, global_config).expect("Failed to write global config");
+
+    let opts = InstallOptions::skill("document-skills")
+        .with_source("registry:test-marketplace/document-skills")
+        .with_scope(ConfigScope::PerProjectShared);
+
+    let report = cmd.execute(&opts).expect("Install should succeed");
+    assert!(report.changed, "Expected group install to change state");
+
+    for (name, _) in skills {
+        let installed = project_root.join(format!(".claude/skills/{}/SKILL.md", name));
+        assert!(
+            installed.exists(),
+            "Expected installed SKILL.md to exist at {}",
+            installed.display()
+        );
+    }
 }
 
 #[test]
