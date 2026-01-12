@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub use crate::fs::LinkMode;
 use crate::fs::tree_hash::hash_tree;
+use crate::orchestration::uninstall::remove_path_if_exists;
 use crate::version::LockedSkill;
 
 #[derive(Debug, Clone)]
@@ -259,7 +260,7 @@ fn replace_dst_with_tmp(
                 dst_dir.display()
             );
         }
-        remove_path(dst_dir).with_context(|| {
+        remove_path_if_exists(dst_dir).with_context(|| {
             format!(
                 "Failed to remove existing destination: {}",
                 dst_dir.display()
@@ -275,15 +276,6 @@ fn replace_dst_with_tmp(
         )
     })?;
     Ok(())
-}
-
-fn remove_path(path: &Path) -> std::io::Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    if meta.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
 }
 
 fn unique_temp_path(dst_dir: &Path) -> anyhow::Result<PathBuf> {

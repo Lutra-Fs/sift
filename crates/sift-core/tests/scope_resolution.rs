@@ -1,5 +1,5 @@
 use sift_core::config::ConfigScope;
-use sift_core::install::scope::{
+use sift_core::orchestration::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, ScopeSupport, resolve_scope,
 };
 

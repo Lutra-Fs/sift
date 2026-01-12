@@ -202,6 +202,29 @@ Sift uses a **Resource-Oriented** design (`noun verb`) with shortcuts.
 *   If multiple registries are configured and the user provides a bare name, CLI requires `--registry`.
 *   `--source` accepts fully-qualified sources and will be normalized when a raw URL or path is provided (warning on normalization).
 
+#### **Uninstall Scope Behavior**
+When uninstalling, scope behavior depends on the `--scope` flag:
+
+| Mode | Behavior |
+|------|----------|
+| **Auto (default)** | Detects scope from lockfile, then searches all configs |
+| **--scope all** | Removes from all scopes where installed (respects client capabilities) |
+| **Explicit scope** | Errors if package not found in that scope |
+
+```bash
+# Auto-detect scope (default)
+sift uninstall mcp my-server
+
+# Remove from all scopes
+sift uninstall skill my-skill --scope all
+
+# Remove from specific scope only
+sift uninstall mcp shared --scope shared
+
+# 'rm' is an alias for 'uninstall'
+sift rm skill test
+```
+
 #### **Orphaned Entries & Pruning**
 When a tool is removed from `sift.toml` but remains in the lockfile or filesystem, it is **Orphaned**.
 

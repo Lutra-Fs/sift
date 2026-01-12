@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 use sift_core::config::{ConfigScope, ConfigStore, McpConfigEntry, SkillConfigEntry};
-use sift_core::install::{InstallOutcome, InstallService};
+use sift_core::orchestration::{InstallOutcome, InstallService};
 
 #[test]
 fn install_skill_adds_entry() {

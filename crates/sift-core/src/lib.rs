@@ -8,8 +8,8 @@ pub mod commands;
 pub mod config;
 pub mod fs;
 pub mod git;
-pub mod install;
 pub mod mcp;
+pub mod orchestration;
 pub mod registry;
 pub mod runtime;
 pub mod skills;
@@ -20,7 +20,10 @@ pub mod version;
 /// Re-exports of commonly used types
 pub mod prelude {
     // Commands
-    pub use crate::commands::{InstallCommand, InstallOptions, InstallReport, InstallTarget};
+    pub use crate::commands::{
+        InstallCommand, InstallOptions, InstallReport, InstallTarget, UninstallCommand,
+        UninstallOptions, UninstallReport, UninstallScope, UninstallTarget,
+    };
 
     // Configuration
     pub use crate::config::{

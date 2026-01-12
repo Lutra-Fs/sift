@@ -7,8 +7,8 @@ use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
 use sift_core::config::{ConfigScope, ConfigStore, SkillConfigEntry};
 use sift_core::fs::LinkMode;
-use sift_core::install::orchestrator::InstallOrchestrator;
-use sift_core::install::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
+use sift_core::orchestration::orchestrator::InstallOrchestrator;
+use sift_core::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::skills::installer::SkillInstaller;
 
 fn skill_md(name: &str) -> String {

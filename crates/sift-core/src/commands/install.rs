@@ -14,11 +14,11 @@ use crate::config::{
 };
 use crate::fs::LinkMode;
 use crate::git::GitFetcher;
-use crate::install::orchestrator::{InstallMcpRequest, InstallOrchestrator};
-use crate::install::scope::{
+use crate::mcp::spec::McpResolvedServer;
+use crate::orchestration::orchestrator::{InstallMcpRequest, InstallOrchestrator};
+use crate::orchestration::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
 };
-use crate::mcp::spec::McpResolvedServer;
 use crate::skills::installer::{GitSkillMetadata, SkillInstaller};
 use crate::source::{ResolvedSource, SourceResolver};
 use crate::version::store::LockfileStore;
@@ -474,7 +474,10 @@ impl InstallCommand {
         warnings.extend(report.warnings);
         Ok(InstallReport {
             name,
-            changed: matches!(report.outcome, crate::install::InstallOutcome::Changed),
+            changed: matches!(
+                report.outcome,
+                crate::orchestration::InstallOutcome::Changed
+            ),
             applied: report.applied,
             warnings,
         })
@@ -772,7 +775,10 @@ impl InstallCommand {
         warnings.extend(report.warnings);
         Ok(InstallReport {
             name: name.to_string(),
-            changed: matches!(report.outcome, crate::install::InstallOutcome::Changed),
+            changed: matches!(
+                report.outcome,
+                crate::orchestration::InstallOutcome::Changed
+            ),
             applied: report.applied,
             warnings,
         })

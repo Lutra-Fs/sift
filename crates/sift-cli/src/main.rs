@@ -10,7 +10,9 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use sift_core::commands::{InstallCommand, InstallOptions, InstallTarget};
+use sift_core::commands::{
+    InstallCommand, InstallOptions, InstallTarget, UninstallCommand, UninstallOptions,
+};
 use sift_core::commands::{
     RegistryAddOptions, RegistryCommand, RegistryEntry, RegistryListOptions, RegistryRemoveOptions,
 };
@@ -59,11 +61,28 @@ enum Commands {
     Install(Box<InstallArgs>),
 
     /// Uninstall an MCP server or skill
+    ///
+    /// By default (no --scope), Sift auto-detects where the package is installed:
+    /// 1. Checks lockfile for recorded scope
+    /// 2. Falls back to searching all configs
+    #[command(alias = "rm")]
     Uninstall {
         /// What to uninstall (mcp or skill)
         kind: String,
         /// Name/ID of the package to uninstall
         name: String,
+        /// Configuration scope
+        ///
+        /// - auto (default): Detect from lockfile, then search configs
+        /// - global: Remove from ~/.config/sift/sift.toml
+        /// - shared: Remove from ./sift.toml (project-wide, committed to git)
+        /// - local: Remove from project-local override in ~/.config/sift/sift.toml
+        /// - all: Remove from all scopes where installed
+        #[arg(long)]
+        scope: Option<String>,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
 
     /// List MCP servers or skills
@@ -186,8 +205,13 @@ fn run_cli(command: Commands) -> Result<()> {
         Commands::Install(args) => {
             run_install(*args)?;
         }
-        Commands::Uninstall { kind, name } => {
-            println!("Uninstalling {kind}: {name}");
+        Commands::Uninstall {
+            kind,
+            name,
+            scope,
+            format,
+        } => {
+            run_uninstall(kind, name, scope, format)?;
         }
         Commands::List { kind } => match kind.as_deref() {
             Some("mcp") => println!("Listing MCP servers"),
@@ -315,6 +339,51 @@ fn run_install(args: InstallArgs) -> Result<()> {
 
     for warning in &report.warnings {
         println!("  ⚠ {}", warning);
+    }
+
+    Ok(())
+}
+
+fn run_uninstall(
+    kind: String,
+    name: String,
+    scope: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    let target = match kind.to_lowercase().as_str() {
+        "mcp" => UninstallOptions::mcp(name),
+        "skill" => UninstallOptions::skill(name),
+        _ => anyhow::bail!("Unknown uninstall type: {}. Use 'mcp' or 'skill'", kind),
+    };
+
+    let mut options = target;
+    if let Some(scope) = scope {
+        if scope.to_lowercase() == "all" {
+            options = options.with_scope_all();
+        } else {
+            options = options.with_scope(parse_scope(&scope)?);
+        }
+    }
+
+    let cmd = UninstallCommand::with_defaults()?;
+    let report = cmd.execute(&options)?;
+
+    match format {
+        OutputFormat::Table => {
+            println!("✓ Uninstalled {} '{}'", kind, report.name);
+            for warning in &report.warnings {
+                println!("  ⚠ {}", warning);
+            }
+        }
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "name": report.name,
+                "changed": report.changed,
+                "warnings": report.warnings,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Quiet => {}
     }
 
     Ok(())

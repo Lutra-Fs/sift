@@ -7,10 +7,10 @@ use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
 use sift_core::config::{ConfigScope, ConfigStore, McpConfigEntry};
 use sift_core::fs::LinkMode;
-use sift_core::install::orchestrator::InstallMcpRequest;
-use sift_core::install::orchestrator::InstallOrchestrator;
-use sift_core::install::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::mcp::spec::McpResolvedServer;
+use sift_core::orchestration::orchestrator::InstallMcpRequest;
+use sift_core::orchestration::orchestrator::InstallOrchestrator;
+use sift_core::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 
 #[test]
 fn install_mcp_updates_config_and_writes_project_file() {

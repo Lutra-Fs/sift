@@ -8,9 +8,10 @@ use crate::client::{ClientAdapter, ClientContext, PathRoot};
 use crate::config::managed_json::apply_managed_entries_in_path;
 use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
 use crate::fs::LinkMode;
-use crate::install::git_exclude::ensure_git_exclude;
-use crate::install::scope::ScopeResolution;
-use crate::install::{InstallOutcome, InstallService};
+use crate::orchestration::git_exclude::ensure_git_exclude;
+use crate::orchestration::scope::ScopeResolution;
+use crate::orchestration::uninstall::remove_path_if_exists;
+use crate::orchestration::{InstallOutcome, InstallService};
 use crate::skills::installer::{GitSkillMetadata, SkillInstallResult, SkillInstaller};
 use crate::version::lock::LockedMcpServer;
 use crate::version::store::LockfileStore;
@@ -187,6 +188,11 @@ impl InstallOrchestrator {
                 let root = resolve_plan_path(ctx, plan.root, &plan.relative_path)?;
                 let dst_dir = root.join(name);
 
+                // Force mode: clean up existing delivery artifacts before re-installing
+                if force {
+                    self.cleanup_skill_delivery(ctx, &dst_dir, name)?;
+                }
+
                 if plan.use_git_exclude {
                     let rel = plan.relative_path.to_string_lossy();
                     ensure_git_exclude(&ctx.project_root, rel.as_ref())
@@ -217,9 +223,34 @@ impl InstallOrchestrator {
             }
         }
     }
+
+    /// Clean up skill delivery artifacts (filesystem + lockfile) without touching sift.toml.
+    fn cleanup_skill_delivery(
+        &self,
+        ctx: &ClientContext,
+        dst_dir: &Path,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        // Remove destination directory if exists
+        remove_path_if_exists(dst_dir)
+            .with_context(|| format!("Failed to remove skill directory: {}", dst_dir.display()))?;
+
+        // Remove lockfile entry
+        let store_dir = self.ownership_store.store_dir().to_path_buf();
+        let project_root = self
+            .ownership_store
+            .project_root()
+            .cloned()
+            .unwrap_or_else(|| ctx.project_root.clone());
+        let mut lockfile = LockfileStore::load(Some(project_root.clone()), store_dir.clone())?;
+        if lockfile.remove_skill(name).is_some() {
+            LockfileStore::save(Some(project_root), store_dir, &lockfile)?;
+        }
+        Ok(())
+    }
 }
 
-fn resolve_plan_path(
+pub(crate) fn resolve_plan_path(
     ctx: &ClientContext,
     root: PathRoot,
     relative: &Path,
@@ -232,7 +263,7 @@ fn resolve_plan_path(
     Ok(base.join(relative))
 }
 
-fn ensure_relative_path(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn ensure_relative_path(path: &Path) -> anyhow::Result<()> {
     if path.is_absolute() {
         anyhow::bail!("Absolute paths are not allowed in install plans");
     }

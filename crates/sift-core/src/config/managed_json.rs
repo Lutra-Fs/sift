@@ -84,6 +84,20 @@ pub fn apply_managed_entries_in_path(
     })
 }
 
+pub fn read_json_map_at_path(
+    config_path: &Path,
+    path: &[&str],
+) -> anyhow::Result<Map<String, Value>> {
+    if path.is_empty() {
+        anyhow::bail!("Path for managed entries cannot be empty");
+    }
+    if !config_path.exists() {
+        return Ok(Map::new());
+    }
+    let root = load_json_map(config_path)?;
+    extract_map_at_path(&root, path)
+}
+
 fn load_json_map(path: &Path) -> anyhow::Result<Map<String, Value>> {
     if !path.exists() {
         return Ok(Map::new());

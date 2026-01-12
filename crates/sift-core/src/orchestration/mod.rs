@@ -148,3 +148,4 @@ fn entries_equal<T: serde::Serialize>(left: &T, right: &T) -> bool {
 pub mod git_exclude;
 pub mod orchestrator;
 pub mod scope;
+pub mod uninstall;

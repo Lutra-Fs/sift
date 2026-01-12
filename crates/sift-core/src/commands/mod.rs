@@ -6,9 +6,13 @@
 
 pub mod install;
 pub mod registry;
+pub mod uninstall;
 
 pub use install::{InstallCommand, InstallOptions, InstallReport, InstallTarget};
 pub use registry::{
     AddOptions as RegistryAddOptions, ListOptions as RegistryListOptions, RegistryCommand,
     RegistryEntry, RegistryReport, RemoveOptions as RegistryRemoveOptions,
+};
+pub use uninstall::{
+    UninstallCommand, UninstallOptions, UninstallReport, UninstallScope, UninstallTarget,
 };
