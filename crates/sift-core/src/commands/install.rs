@@ -13,10 +13,10 @@ use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry, merge_configs
 use crate::fs::LinkMode;
 use crate::lockfile::LockfileService;
 use crate::mcp::spec::McpResolvedServer;
-use crate::orchestration::orchestrator::{InstallMcpRequest, InstallOrchestrator};
 use crate::orchestration::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
 };
+use crate::orchestration::{InstallMcpRequest, InstallOrchestrator};
 use crate::skills::installer::SkillInstaller;
 use crate::source::SourceResolver;
 use crate::types::ConfigScope;

@@ -10,7 +10,7 @@ use sift_core::config::{ConfigStore, SkillConfigEntry};
 use sift_core::fs::LinkMode;
 use sift_core::git::GitFetcher;
 use sift_core::lockfile::LockfileService;
-use sift_core::orchestration::orchestrator::InstallOrchestrator;
+use sift_core::orchestration::InstallOrchestrator;
 use sift_core::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::skills::installer::SkillInstaller;
 use sift_core::source::SourceResolver;

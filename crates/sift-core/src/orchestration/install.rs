@@ -13,8 +13,8 @@ use crate::lockfile::LockfileService;
 use crate::lockfile::{LockedMcpServer, ResolvedOrigin};
 use crate::orchestration::git_exclude::ensure_git_exclude;
 use crate::orchestration::scope::ScopeResolution;
+use crate::orchestration::service::{InstallOutcome, InstallService};
 use crate::orchestration::uninstall::remove_path_if_exists;
-use crate::orchestration::{InstallOutcome, InstallService};
 use crate::skills::installer::{GitSkillMetadata, SkillInstallResult, SkillInstaller};
 use crate::source::{RegistryMetadata, ResolvedSource, SourceResolver};
 

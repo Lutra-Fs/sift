@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 pub use crate::fs::LinkMode;
 use crate::fs::tree_hash::hash_tree;
 use crate::lockfile::LockedSkill;
-use crate::orchestration::uninstall::remove_path_if_exists;
+use crate::orchestration::remove_path_if_exists;
 
 #[derive(Debug, Clone)]
 pub struct LinkerOptions {

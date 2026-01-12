@@ -9,8 +9,8 @@ use crate::client::{ClientAdapter, ClientContext};
 use crate::config::{ConfigStore, merge_configs};
 use crate::fs::LinkMode;
 use crate::lockfile::{LockfileService, LockfileStore};
+use crate::orchestration::UninstallOrchestrator;
 use crate::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
-use crate::orchestration::uninstall::UninstallOrchestrator;
 use crate::types::ConfigScope;
 
 /// What to uninstall: MCP server or skill
@@ -315,7 +315,7 @@ impl UninstallCommand {
     ) -> anyhow::Result<Option<ConfigScope>> {
         for scope in all_scopes() {
             let store = self.create_config_store(scope)?;
-            let service = crate::orchestration::uninstall::UninstallService::new(store);
+            let service = crate::orchestration::UninstallService::new(store);
             let exists = match options.target {
                 UninstallTarget::Mcp => service.contains_mcp(&options.name)?,
                 UninstallTarget::Skill => service.contains_skill(&options.name)?,
