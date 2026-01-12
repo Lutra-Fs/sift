@@ -143,6 +143,167 @@ impl LockfileStore {
     }
 }
 
+/// Service for lockfile operations with encapsulated load/modify/save cycle.
+///
+/// This service hides the repetitive pattern of:
+/// 1. Load lockfile from disk
+/// 2. Modify the in-memory lockfile
+/// 3. Save back to disk
+///
+/// All operations are atomic - each method loads, modifies, and saves.
+#[derive(Debug, Clone)]
+pub struct LockfileService {
+    store_dir: PathBuf,
+    project_root: Option<PathBuf>,
+}
+
+impl LockfileService {
+    /// Create a new lockfile service.
+    ///
+    /// # Parameters
+    /// - `store_dir`: Directory containing lockfiles (typically `<state_dir>/locks`)
+    /// - `project_root`: Project root path. If None, operates on global lockfile.
+    pub fn new(store_dir: PathBuf, project_root: Option<PathBuf>) -> Self {
+        Self {
+            store_dir,
+            project_root,
+        }
+    }
+
+    /// Get the store directory.
+    pub fn store_dir(&self) -> &Path {
+        &self.store_dir
+    }
+
+    /// Get the project root.
+    pub fn project_root(&self) -> Option<&PathBuf> {
+        self.project_root.as_ref()
+    }
+
+    /// Load the current lockfile (read-only access).
+    pub fn load(&self) -> anyhow::Result<Lockfile> {
+        LockfileStore::load(self.project_root.clone(), self.store_dir.clone())
+    }
+
+    /// Add or update an MCP server entry.
+    pub fn add_mcp(
+        &self,
+        name: &str,
+        server: crate::version::lock::LockedMcpServer,
+    ) -> anyhow::Result<()> {
+        let mut lockfile = self.load()?;
+        lockfile.add_mcp_server(name.to_string(), server);
+        self.save(&lockfile)
+    }
+
+    /// Remove an MCP server entry.
+    ///
+    /// Returns `true` if the entry existed and was removed.
+    pub fn remove_mcp(&self, name: &str) -> anyhow::Result<bool> {
+        let mut lockfile = self.load()?;
+        let removed = lockfile.remove_mcp_server(name).is_some();
+        if removed {
+            self.save(&lockfile)?;
+        }
+        Ok(removed)
+    }
+
+    /// Get an MCP server entry.
+    pub fn get_mcp(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<crate::version::lock::LockedMcpServer>> {
+        let lockfile = self.load()?;
+        Ok(lockfile.get_mcp_server(name).cloned())
+    }
+
+    /// Add or update a skill entry.
+    pub fn add_skill(
+        &self,
+        name: &str,
+        skill: crate::version::lock::LockedSkill,
+    ) -> anyhow::Result<()> {
+        let mut lockfile = self.load()?;
+        lockfile.add_skill(name.to_string(), skill);
+        self.save(&lockfile)
+    }
+
+    /// Remove a skill entry.
+    ///
+    /// Returns `true` if the entry existed and was removed.
+    pub fn remove_skill(&self, name: &str) -> anyhow::Result<bool> {
+        let mut lockfile = self.load()?;
+        let removed = lockfile.remove_skill(name).is_some();
+        if removed {
+            self.save(&lockfile)?;
+        }
+        Ok(removed)
+    }
+
+    /// Get a skill entry.
+    pub fn get_skill(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<Option<crate::version::lock::LockedSkill>> {
+        let lockfile = self.load()?;
+        Ok(lockfile.get_skill(name).cloned())
+    }
+
+    /// Load ownership data for a config path.
+    pub fn load_ownership(
+        &self,
+        config_path: &Path,
+        field: Option<&str>,
+    ) -> anyhow::Result<std::collections::HashMap<String, String>> {
+        let key = ownership_key(config_path, field);
+        let lockfile = self.load()?;
+        Ok(lockfile
+            .managed_configs
+            .get(&key)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Save ownership data for a config path.
+    pub fn save_ownership(
+        &self,
+        config_path: &Path,
+        field: Option<&str>,
+        ownership: &std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<()> {
+        let key = ownership_key(config_path, field);
+        let mut lockfile = self.load()?;
+        lockfile.managed_configs.insert(key, ownership.clone());
+        self.save(&lockfile)
+    }
+
+    /// Modify the lockfile with a custom function.
+    ///
+    /// Use this for complex operations that need to read and modify multiple parts.
+    pub fn modify<F>(&self, f: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(&mut Lockfile),
+    {
+        let mut lockfile = self.load()?;
+        f(&mut lockfile);
+        self.save(&lockfile)
+    }
+
+    fn save(&self, lockfile: &Lockfile) -> anyhow::Result<()> {
+        LockfileStore::save(self.project_root.clone(), self.store_dir.clone(), lockfile)
+    }
+}
+
+/// Generate ownership key from config path and optional field.
+fn ownership_key(config_path: &Path, field: Option<&str>) -> String {
+    let mut path_string = config_path.to_string_lossy().to_string();
+    if let Some(field) = field {
+        path_string.push('#');
+        path_string.push_str(field);
+    }
+    blake3::hash(path_string.as_bytes()).to_hex().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +464,248 @@ mod tests {
         // Verify it's valid JSON
         let bytes = fs::read(&global_path).expect("read should succeed");
         let _: Lockfile = serde_json::from_slice(&bytes).expect("lockfile should be valid JSON");
+    }
+
+    // --- LockfileService tests ---
+
+    #[test]
+    fn test_lockfile_service_add_and_get_mcp() {
+        let tmp = TempDir::new().expect("tempdir should succeed");
+        let store_dir = tmp.path().join("locks");
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
+
+        let service = LockfileService::new(store_dir, Some(project_dir));
+
+        use crate::config::ConfigScope;
+        use crate::version::lock::LockedMcpServer;
+        let server = LockedMcpServer::new(
+            "my-server".to_string(),
+            "1.0.0".to_string(),
+            "^1.0".to_string(),
+            "registry:official".to_string(),
+            ConfigScope::Global,
+        );
+
+        service
+            .add_mcp("test-mcp", server)
+            .expect("add_mcp should succeed");
+
+        let retrieved = service.get_mcp("test-mcp").expect("get_mcp should succeed");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.expect("server should exist");
+        assert_eq!(retrieved.name, "my-server");
+        assert_eq!(retrieved.resolved_version, "1.0.0");
+    }
+
+    #[test]
+    fn test_lockfile_service_remove_mcp() {
+        let tmp = TempDir::new().expect("tempdir should succeed");
+        let store_dir = tmp.path().join("locks");
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
+
+        let service = LockfileService::new(store_dir, Some(project_dir));
+
+        use crate::config::ConfigScope;
+        use crate::version::lock::LockedMcpServer;
+        let server = LockedMcpServer::new(
+            "my-server".to_string(),
+            "1.0.0".to_string(),
+            "latest".to_string(),
+            "registry:official".to_string(),
+            ConfigScope::Global,
+        );
+
+        service
+            .add_mcp("test-mcp", server)
+            .expect("add_mcp should succeed");
+        let removed = service
+            .remove_mcp("test-mcp")
+            .expect("remove_mcp should succeed");
+        assert!(removed);
+
+        let retrieved = service.get_mcp("test-mcp").expect("get_mcp should succeed");
+        assert!(retrieved.is_none());
+
+        // Remove again should return false
+        let removed_again = service
+            .remove_mcp("test-mcp")
+            .expect("remove_mcp should succeed");
+        assert!(!removed_again);
+    }
+
+    #[test]
+    fn test_lockfile_service_add_and_get_skill() {
+        let tmp = TempDir::new().expect("tempdir should succeed");
+        let store_dir = tmp.path().join("locks");
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
+
+        let service = LockfileService::new(store_dir, Some(project_dir));
+
+        use crate::config::ConfigScope;
+        use crate::version::lock::LockedSkill;
+        let skill = LockedSkill::new(
+            "my-skill".to_string(),
+            "abc123".to_string(),
+            "HEAD".to_string(),
+            "git:https://example.com/skill".to_string(),
+            ConfigScope::PerProjectShared,
+        );
+
+        service
+            .add_skill("test-skill", skill)
+            .expect("add_skill should succeed");
+
+        let retrieved = service
+            .get_skill("test-skill")
+            .expect("get_skill should succeed");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.expect("skill should exist");
+        assert_eq!(retrieved.name, "my-skill");
+        assert_eq!(retrieved.resolved_version, "abc123");
+    }
+
+    #[test]
+    fn test_lockfile_service_remove_skill() {
+        let tmp = TempDir::new().expect("tempdir should succeed");
+        let store_dir = tmp.path().join("locks");
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
+
+        let service = LockfileService::new(store_dir, Some(project_dir));
+
+        use crate::config::ConfigScope;
+        use crate::version::lock::LockedSkill;
+        let skill = LockedSkill::new(
+            "my-skill".to_string(),
+            "abc123".to_string(),
+            "HEAD".to_string(),
+            "git:https://example.com/skill".to_string(),
+            ConfigScope::PerProjectShared,
+        );
+
+        service
+            .add_skill("test-skill", skill)
+            .expect("add_skill should succeed");
+        let removed = service
+            .remove_skill("test-skill")
+            .expect("remove_skill should succeed");
+        assert!(removed);
+
+        let retrieved = service
+            .get_skill("test-skill")
+            .expect("get_skill should succeed");
+        assert!(retrieved.is_none());
+    }
+
+    #[test]
+    fn test_lockfile_service_ownership() {
+        let tmp = TempDir::new().expect("tempdir should succeed");
+        let store_dir = tmp.path().join("locks");
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
+
+        let service = LockfileService::new(store_dir, Some(project_dir.clone()));
+        let config_path = project_dir.join("config.json");
+
+        // Load empty ownership
+        let ownership = service
+            .load_ownership(&config_path, None)
+            .expect("load_ownership should succeed");
+        assert!(ownership.is_empty());
+
+        // Save ownership
+        let mut ownership = std::collections::HashMap::new();
+        ownership.insert("entry1".to_string(), "hash1".to_string());
+        ownership.insert("entry2".to_string(), "hash2".to_string());
+        service
+            .save_ownership(&config_path, None, &ownership)
+            .expect("save_ownership should succeed");
+
+        // Load and verify
+        let loaded = service
+            .load_ownership(&config_path, None)
+            .expect("load_ownership should succeed");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.get("entry1"), Some(&"hash1".to_string()));
+        assert_eq!(loaded.get("entry2"), Some(&"hash2".to_string()));
+    }
+
+    #[test]
+    fn test_lockfile_service_ownership_with_field() {
+        let tmp = TempDir::new().expect("tempdir should succeed");
+        let store_dir = tmp.path().join("locks");
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
+
+        let service = LockfileService::new(store_dir, Some(project_dir.clone()));
+        let config_path = project_dir.join("config.json");
+
+        // Save ownership for different fields
+        let mut ownership1 = std::collections::HashMap::new();
+        ownership1.insert("entry1".to_string(), "hash1".to_string());
+        service
+            .save_ownership(&config_path, Some("mcpServers"), &ownership1)
+            .expect("save should succeed");
+
+        let mut ownership2 = std::collections::HashMap::new();
+        ownership2.insert("entry2".to_string(), "hash2".to_string());
+        service
+            .save_ownership(&config_path, Some("skills"), &ownership2)
+            .expect("save should succeed");
+
+        // Load and verify they are separate
+        let loaded1 = service
+            .load_ownership(&config_path, Some("mcpServers"))
+            .expect("load should succeed");
+        let loaded2 = service
+            .load_ownership(&config_path, Some("skills"))
+            .expect("load should succeed");
+
+        assert_eq!(loaded1.len(), 1);
+        assert_eq!(loaded1.get("entry1"), Some(&"hash1".to_string()));
+        assert_eq!(loaded2.len(), 1);
+        assert_eq!(loaded2.get("entry2"), Some(&"hash2".to_string()));
+    }
+
+    #[test]
+    fn test_lockfile_service_modify() {
+        let tmp = TempDir::new().expect("tempdir should succeed");
+        let store_dir = tmp.path().join("locks");
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).expect("create_dir_all should succeed");
+
+        let service = LockfileService::new(store_dir, Some(project_dir));
+
+        use crate::config::ConfigScope;
+        use crate::version::lock::{LockedMcpServer, LockedSkill};
+
+        service
+            .modify(|lockfile| {
+                let server = LockedMcpServer::new(
+                    "server1".to_string(),
+                    "1.0.0".to_string(),
+                    "latest".to_string(),
+                    "registry:official".to_string(),
+                    ConfigScope::Global,
+                );
+                let skill = LockedSkill::new(
+                    "skill1".to_string(),
+                    "abc123".to_string(),
+                    "HEAD".to_string(),
+                    "git:https://example.com".to_string(),
+                    ConfigScope::PerProjectShared,
+                );
+                lockfile.add_mcp_server("mcp1".to_string(), server);
+                lockfile.add_skill("skill1".to_string(), skill);
+            })
+            .expect("modify should succeed");
+
+        // Verify both were saved
+        let lockfile = service.load().expect("load should succeed");
+        assert!(lockfile.get_mcp_server("mcp1").is_some());
+        assert!(lockfile.get_skill("skill1").is_some());
     }
 }

@@ -13,12 +13,11 @@ use serde_json::Value;
 
 use crate::client::claude_code::ClaudeCodeClient;
 use crate::client::{ClientAdapter, ClientContext, PathRoot};
-use crate::config::ownership_store::OwnershipStore;
 use crate::config::schema::{McpConfigEntry, SkillConfigEntry};
 use crate::config::{ConfigScope, SiftConfig};
 use crate::fs::LinkMode;
 use crate::version::lock::{LockedMcpServer, LockedSkill};
-use crate::version::store::LockfileStore;
+use crate::version::store::{LockfileService, LockfileStore};
 
 // =============================================================================
 // Data Structures
@@ -474,9 +473,9 @@ pub fn collect_status_with_paths(
     // 2. Load lockfile from state directory
     let lockfile = LockfileStore::load(Some(project_root.to_path_buf()), state_dir.to_path_buf())?;
 
-    // 3. Create ownership store for verification
-    let ownership_store =
-        OwnershipStore::new(state_dir.to_path_buf(), Some(project_root.to_path_buf()));
+    // 3. Create lockfile service for verification
+    let lockfile_service =
+        LockfileService::new(state_dir.to_path_buf(), Some(project_root.to_path_buf()));
 
     // 4. Get registered clients (currently only Claude Code)
     let clients: Vec<Box<dyn ClientAdapter>> = vec![Box::new(ClaudeCodeClient::new())];
@@ -634,8 +633,8 @@ pub fn collect_status_with_paths(
                             plan.json_path.iter().map(|s| s.as_str()).collect()
                         };
                         let field_key = json_path.join(".");
-                        let ownership = ownership_store
-                            .load_for_field(&config_file_path, &field_key)
+                        let ownership = lockfile_service
+                            .load_ownership(&config_file_path, Some(&field_key))
                             .unwrap_or_default();
 
                         // Check integrity

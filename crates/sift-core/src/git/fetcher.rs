@@ -28,6 +28,11 @@ impl GitFetcher {
         Self { state_dir }
     }
 
+    /// Get the state directory.
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+
     /// Ensure git version is 2.25+ (required for sparse checkout).
     pub fn ensure_git_version() -> anyhow::Result<()> {
         let output = Command::new("git")

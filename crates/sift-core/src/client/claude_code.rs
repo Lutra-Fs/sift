@@ -10,8 +10,8 @@ use crate::client::{
 };
 use crate::config::ConfigScope;
 use crate::config::managed_json::{apply_managed_entries_in_field, apply_managed_entries_in_path};
-use crate::config::ownership_store::OwnershipStore;
 use crate::mcp::spec::{McpResolvedServer, McpTransport};
+use crate::version::store::LockfileService;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudeCodeScope {
@@ -166,14 +166,14 @@ impl ClaudeCodePaths {
 #[derive(Debug)]
 pub struct ClaudeCodeMcpWriter {
     paths: ClaudeCodePaths,
-    ownership_store: OwnershipStore,
+    lockfile_service: LockfileService,
 }
 
 impl ClaudeCodeMcpWriter {
-    pub fn new(paths: ClaudeCodePaths, ownership_store: OwnershipStore) -> Self {
+    pub fn new(paths: ClaudeCodePaths, lockfile_service: LockfileService) -> Self {
         Self {
             paths,
-            ownership_store,
+            lockfile_service,
         }
     }
 
@@ -191,7 +191,7 @@ impl ClaudeCodeMcpWriter {
             &self.paths.project_mcp_path(),
             "mcpServers",
             &map,
-            &self.ownership_store,
+            &self.lockfile_service,
             force,
         )
     }
@@ -206,7 +206,7 @@ impl ClaudeCodeMcpWriter {
             &self.paths.user_config_path(),
             "mcpServers",
             &map,
-            &self.ownership_store,
+            &self.lockfile_service,
             force,
         )
     }
@@ -222,7 +222,7 @@ impl ClaudeCodeMcpWriter {
             &self.paths.user_config_path(),
             &["projects", project_key.as_str(), "mcpServers"],
             &map,
-            &self.ownership_store,
+            &self.lockfile_service,
             force,
         )
     }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 
 use tempfile::TempDir;
@@ -7,9 +8,12 @@ use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
 use sift_core::config::{ConfigScope, ConfigStore, SkillConfigEntry};
 use sift_core::fs::LinkMode;
+use sift_core::git::GitFetcher;
 use sift_core::orchestration::orchestrator::InstallOrchestrator;
 use sift_core::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::skills::installer::SkillInstaller;
+use sift_core::source::SourceResolver;
+use sift_core::version::store::LockfileService;
 
 fn skill_md(name: &str) -> String {
     format!("---\nname: {name}\ndescription: Test skill for {name}.\n---\n# {name}\n")
@@ -22,9 +26,11 @@ fn install_skill_local_git_writes_exclude() {
     fs::create_dir_all(project.join(".git/info")).expect("create_dir_all should succeed");
 
     let home = temp.path().join("home");
-    let cache_dir = temp.path().join("demo");
-    fs::create_dir_all(&cache_dir).expect("create_dir_all should succeed");
-    fs::write(cache_dir.join("SKILL.md"), skill_md("demo")).expect("write should succeed");
+
+    // Create local skill source directory
+    let skill_src_dir = temp.path().join("demo");
+    fs::create_dir_all(&skill_src_dir).expect("create_dir_all should succeed");
+    fs::write(skill_src_dir.join("SKILL.md"), skill_md("demo")).expect("write should succeed");
 
     let config_store = ConfigStore::from_paths(
         ConfigScope::PerProjectShared,
@@ -32,22 +38,28 @@ fn install_skill_local_git_writes_exclude() {
         project.clone(),
     );
 
-    let ownership_store =
-        sift_core::config::OwnershipStore::new(temp.path().join("state"), Some(project.clone()));
+    let state_dir = temp.path().join("state");
+    let lockfile_service = LockfileService::new(state_dir.clone(), Some(project.clone()));
     let skill_installer = SkillInstaller::new(temp.path().join("locks"), Some(project.clone()));
+    let source_resolver = SourceResolver::new(state_dir.clone(), project.clone(), HashMap::new());
+    let git_fetcher = GitFetcher::new(state_dir.clone());
     let orchestrator = InstallOrchestrator::new(
         config_store,
-        ownership_store,
+        lockfile_service,
         skill_installer,
+        source_resolver,
+        git_fetcher,
         LinkMode::Copy,
     );
 
     let adapter = ClaudeCodeClient::new();
     let ctx = ClientContext::new(home.clone(), project.clone());
 
+    // Use local source that points to the skill directory
+    let local_source = format!("local:{}", skill_src_dir.display());
     let entry = SkillConfigEntry {
-        source: "registry:demo".to_string(),
-        version: Some("latest".to_string()),
+        source: local_source.clone(),
+        version: None,
         targets: None,
         ignore_targets: None,
         reset_version: false,
@@ -62,18 +74,14 @@ fn install_skill_local_git_writes_exclude() {
     .expect("local scope resolution should succeed in git repo");
 
     let report = orchestrator
-        .install_skill(
+        .install_skill_from_source(
             &adapter,
             &ctx,
             "demo",
             entry,
-            &cache_dir,
+            &local_source,
             resolution,
             false,
-            "resolved-1",
-            "latest",
-            "registry:test",
-            None,
         )
         .expect("local install should succeed in git repo");
 

@@ -7,10 +7,13 @@ use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
 use sift_core::config::{ConfigScope, ConfigStore, McpConfigEntry};
 use sift_core::fs::LinkMode;
+use sift_core::git::GitFetcher;
 use sift_core::mcp::spec::McpResolvedServer;
 use sift_core::orchestration::orchestrator::InstallMcpRequest;
 use sift_core::orchestration::orchestrator::InstallOrchestrator;
 use sift_core::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
+use sift_core::source::SourceResolver;
+use sift_core::version::store::LockfileService;
 
 #[test]
 fn install_mcp_updates_config_and_writes_project_file() {
@@ -25,16 +28,20 @@ fn install_mcp_updates_config_and_writes_project_file() {
     let project = temp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
 
-    let ownership_store =
-        sift_core::config::OwnershipStore::new(temp.path().join("state"), Some(project.clone()));
+    let state_dir = temp.path().join("state");
+    let lockfile_service = LockfileService::new(state_dir.clone(), Some(project.clone()));
     let skill_installer = sift_core::skills::installer::SkillInstaller::new(
         temp.path().join("locks"),
         Some(project.clone()),
     );
+    let source_resolver = SourceResolver::new(state_dir.clone(), project.clone(), HashMap::new());
+    let git_fetcher = GitFetcher::new(state_dir.clone());
     let orchestrator = InstallOrchestrator::new(
         config_store,
-        ownership_store,
+        lockfile_service,
         skill_installer,
+        source_resolver,
+        git_fetcher,
         LinkMode::Auto,
     );
     let adapter = ClaudeCodeClient::new();

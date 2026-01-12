@@ -8,4 +8,4 @@ pub mod store;
 
 // Re-export the lockfile types
 pub use lock::{LockedMcpServer, LockedSkill, Lockfile, VersionConstraint, VersionResolver};
-pub use store::LockfileStore;
+pub use store::{LockfileService, LockfileStore};

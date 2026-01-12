@@ -8,9 +8,9 @@ use serde_json::{Map, Value};
 
 use crate::client::{ClientAdapter, ClientContext};
 use crate::config::managed_json::read_json_map_at_path;
-use crate::config::{ConfigScope, ConfigStore, OwnershipStore};
+use crate::config::{ConfigScope, ConfigStore};
 use crate::orchestration::orchestrator::resolve_plan_path;
-use crate::version::store::LockfileStore;
+use crate::version::store::LockfileService;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UninstallOutcome {
@@ -67,10 +67,10 @@ impl UninstallService {
 
         if scope == ConfigScope::PerProjectLocal {
             let project_key = self.store.project_root().to_string_lossy().to_string();
-            if let Some(project) = config.projects.get_mut(&project_key) {
-                if project.mcp.remove(name).is_some() {
-                    removed = true;
-                }
+            if let Some(project) = config.projects.get_mut(&project_key)
+                && project.mcp.remove(name).is_some()
+            {
+                removed = true;
             }
             if removed {
                 cleanup_project_entry(&mut config, &project_key);
@@ -94,10 +94,10 @@ impl UninstallService {
 
         if scope == ConfigScope::PerProjectLocal {
             let project_key = self.store.project_root().to_string_lossy().to_string();
-            if let Some(project) = config.projects.get_mut(&project_key) {
-                if project.skill.remove(name).is_some() {
-                    removed = true;
-                }
+            if let Some(project) = config.projects.get_mut(&project_key)
+                && project.skill.remove(name).is_some()
+            {
+                removed = true;
             }
             if removed {
                 cleanup_project_entry(&mut config, &project_key);
@@ -140,14 +140,14 @@ pub struct UninstallReport {
 #[derive(Debug)]
 pub struct UninstallOrchestrator {
     uninstall: UninstallService,
-    ownership_store: OwnershipStore,
+    lockfile_service: LockfileService,
 }
 
 impl UninstallOrchestrator {
-    pub fn new(store: ConfigStore, ownership_store: OwnershipStore) -> Self {
+    pub fn new(store: ConfigStore, lockfile_service: LockfileService) -> Self {
         Self {
             uninstall: UninstallService::new(store),
-            ownership_store,
+            lockfile_service,
         }
     }
 
@@ -164,7 +164,7 @@ impl UninstallOrchestrator {
         let outcome = self.uninstall.remove_mcp(name)?;
         let mut warnings = Vec::new();
         let managed_changed = self.remove_managed_mcp_entry(client, ctx, name, &mut warnings)?;
-        let lockfile_removed = remove_mcp_lockfile(&self.ownership_store, ctx, name)?;
+        let lockfile_removed = self.lockfile_service.remove_mcp(name)?;
         let changed =
             matches!(outcome, UninstallOutcome::Changed) || managed_changed || lockfile_removed;
         Ok(UninstallReport { changed, warnings })
@@ -178,7 +178,7 @@ impl UninstallOrchestrator {
     ) -> anyhow::Result<UninstallReport> {
         let outcome = self.uninstall.remove_skill(name)?;
         let removed_dir = self.remove_skill_dir(client, ctx, name)?;
-        let lockfile_removed = remove_skill_lockfile(&self.ownership_store, ctx, name)?;
+        let lockfile_removed = self.lockfile_service.remove_skill(name)?;
         let changed =
             matches!(outcome, UninstallOutcome::Changed) || removed_dir || lockfile_removed;
         Ok(UninstallReport {
@@ -200,8 +200,8 @@ impl UninstallOrchestrator {
         let path: Vec<&str> = plan.json_path.iter().map(|s| s.as_str()).collect();
         let ownership_key = plan.json_path.join(".");
         let ownership = self
-            .ownership_store
-            .load_for_field(&config_path, &ownership_key)?;
+            .lockfile_service
+            .load_ownership(&config_path, Some(&ownership_key))?;
         if ownership.is_empty() && !config_path.exists() {
             return Ok(false);
         }
@@ -227,7 +227,7 @@ impl UninstallOrchestrator {
             &config_path,
             &path,
             &desired,
-            &self.ownership_store,
+            &self.lockfile_service,
             false,
         )
         .with_context(|| format!("Failed to remove MCP '{}' from client config", name))?;
@@ -259,7 +259,7 @@ impl UninstallOrchestrator {
         name: &str,
     ) -> anyhow::Result<bool> {
         let removed_dir = self.remove_skill_dir(client, ctx, name)?;
-        let lockfile_removed = remove_skill_lockfile(&self.ownership_store, ctx, name)?;
+        let lockfile_removed = self.lockfile_service.remove_skill(name)?;
         Ok(removed_dir || lockfile_removed)
     }
 }
@@ -298,32 +298,4 @@ pub fn remove_path_if_exists(path: &Path) -> anyhow::Result<bool> {
             .with_context(|| format!("Failed to remove file: {}", path.display()))?;
     }
     Ok(true)
-}
-
-fn remove_mcp_lockfile(
-    ownership_store: &OwnershipStore,
-    ctx: &ClientContext,
-    name: &str,
-) -> anyhow::Result<bool> {
-    let store_dir = ownership_store.store_dir().to_path_buf();
-    let mut lockfile = LockfileStore::load(Some(ctx.project_root.clone()), store_dir.clone())?;
-    let removed = lockfile.remove_mcp_server(name).is_some();
-    if removed {
-        LockfileStore::save(Some(ctx.project_root.clone()), store_dir, &lockfile)?;
-    }
-    Ok(removed)
-}
-
-fn remove_skill_lockfile(
-    ownership_store: &OwnershipStore,
-    ctx: &ClientContext,
-    name: &str,
-) -> anyhow::Result<bool> {
-    let store_dir = ownership_store.store_dir().to_path_buf();
-    let mut lockfile = LockfileStore::load(Some(ctx.project_root.clone()), store_dir.clone())?;
-    let removed = lockfile.remove_skill(name).is_some();
-    if removed {
-        LockfileStore::save(Some(ctx.project_root.clone()), store_dir, &lockfile)?;
-    }
-    Ok(removed)
 }

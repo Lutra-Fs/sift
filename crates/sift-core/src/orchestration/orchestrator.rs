@@ -8,13 +8,15 @@ use crate::client::{ClientAdapter, ClientContext, PathRoot};
 use crate::config::managed_json::apply_managed_entries_in_path;
 use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
 use crate::fs::LinkMode;
+use crate::git::{FetchResult, GitFetcher};
 use crate::orchestration::git_exclude::ensure_git_exclude;
 use crate::orchestration::scope::ScopeResolution;
 use crate::orchestration::uninstall::remove_path_if_exists;
 use crate::orchestration::{InstallOutcome, InstallService};
 use crate::skills::installer::{GitSkillMetadata, SkillInstallResult, SkillInstaller};
+use crate::source::{RegistryMetadata, ResolvedSource, SourceResolver};
 use crate::version::lock::LockedMcpServer;
-use crate::version::store::LockfileStore;
+use crate::version::store::LockfileService;
 
 #[derive(Debug, Clone)]
 pub struct InstallReport {
@@ -44,22 +46,38 @@ pub struct SkillInstallReport {
 #[derive(Debug)]
 pub struct InstallOrchestrator {
     install: InstallService,
-    ownership_store: crate::config::OwnershipStore,
+    lockfile_service: LockfileService,
     skill_installer: SkillInstaller,
+    source_resolver: SourceResolver,
+    git_fetcher: GitFetcher,
     link_mode: LinkMode,
+}
+
+/// Result of preparing a skill source for installation.
+#[derive(Debug)]
+struct PreparedSkillSource {
+    cache_dir: PathBuf,
+    resolved_version: String,
+    constraint: String,
+    registry: String,
+    git_metadata: Option<GitSkillMetadata>,
 }
 
 impl InstallOrchestrator {
     pub fn new(
         store: ConfigStore,
-        ownership_store: crate::config::OwnershipStore,
+        lockfile_service: LockfileService,
         skill_installer: SkillInstaller,
+        source_resolver: SourceResolver,
+        git_fetcher: GitFetcher,
         link_mode: LinkMode,
     ) -> Self {
         Self {
             install: InstallService::new(store),
-            ownership_store,
+            lockfile_service,
             skill_installer,
+            source_resolver,
+            git_fetcher,
             link_mode,
         }
     }
@@ -78,7 +96,7 @@ impl InstallOrchestrator {
             ScopeResolution::Skip { warning } => {
                 let entry = req.entry.clone();
                 let outcome = self.install.install_mcp(req.name, req.entry, req.force)?;
-                self.update_mcp_lockfile(ctx, req.name, &entry, req.declared_version)?;
+                self.update_mcp_lockfile(req.name, &entry, req.declared_version)?;
                 Ok(InstallReport {
                     outcome,
                     warnings: vec![warning],
@@ -95,11 +113,11 @@ impl InstallOrchestrator {
                     &config_path,
                     &path,
                     &plan.entries,
-                    &self.ownership_store,
+                    &self.lockfile_service,
                     req.force,
                 )
                 .with_context(|| format!("Failed to apply MCP config for {}", req.name))?;
-                self.update_mcp_lockfile(ctx, req.name, &entry, req.declared_version)?;
+                self.update_mcp_lockfile(req.name, &entry, req.declared_version)?;
 
                 Ok(InstallReport {
                     outcome,
@@ -112,20 +130,10 @@ impl InstallOrchestrator {
 
     fn update_mcp_lockfile(
         &self,
-        ctx: &ClientContext,
         name: &str,
         entry: &McpConfigEntry,
         declared_version: Option<&str>,
     ) -> anyhow::Result<()> {
-        let store_dir = self.ownership_store.store_dir().to_path_buf();
-        let project_root = self
-            .ownership_store
-            .project_root()
-            .cloned()
-            .unwrap_or_else(|| ctx.project_root.clone());
-        let project_root = Some(project_root);
-        let mut lockfile = LockfileStore::load(project_root.clone(), store_dir.clone())?;
-
         let is_registry = entry.source.starts_with("registry:");
         let constraint = if is_registry {
             declared_version.unwrap_or("latest")
@@ -148,25 +156,32 @@ impl InstallOrchestrator {
             self.install.config_store().scope(),
         );
 
-        lockfile.add_mcp_server(name.to_string(), locked);
-        LockfileStore::save(project_root, store_dir, &lockfile)?;
-        Ok(())
+        self.lockfile_service.add_mcp(name, locked)
     }
 
+    /// Install a skill from a source string.
+    ///
+    /// This is the "active" installation method that resolves the source,
+    /// fetches from git if needed, and handles lockfile caching.
+    ///
+    /// # Arguments
+    /// - `client`: Client adapter for delivery planning
+    /// - `ctx`: Client context with paths
+    /// - `name`: Skill name
+    /// - `entry`: Config entry to write to sift.toml
+    /// - `source`: Normalized source string (e.g., "registry:...", "git:...", "local:...")
+    /// - `resolution`: Scope resolution from resolve_scope()
+    /// - `force`: Force overwrite existing
     #[allow(clippy::too_many_arguments)]
-    pub fn install_skill(
+    pub fn install_skill_from_source(
         &self,
         client: &dyn ClientAdapter,
         ctx: &ClientContext,
         name: &str,
         entry: SkillConfigEntry,
-        cache_dir: &Path,
+        source: &str,
         resolution: ScopeResolution,
         force: bool,
-        resolved_version: &str,
-        constraint: &str,
-        registry: &str,
-        git_metadata: Option<GitSkillMetadata>,
     ) -> anyhow::Result<SkillInstallReport> {
         match resolution {
             ScopeResolution::Skip { warning } => {
@@ -179,7 +194,9 @@ impl InstallOrchestrator {
                 })
             }
             ScopeResolution::Apply(decision) => {
+                let prepared = self.prepare_skill_source(name, source, force)?;
                 let outcome = self.install.install_skill(name, entry, force)?;
+
                 let mut plan = client.plan_skill(ctx, decision.scope)?;
                 if decision.use_git_exclude {
                     plan.use_git_exclude = true;
@@ -188,9 +205,8 @@ impl InstallOrchestrator {
                 let root = resolve_plan_path(ctx, plan.root, &plan.relative_path)?;
                 let dst_dir = root.join(name);
 
-                // Force mode: clean up existing delivery artifacts before re-installing
                 if force {
-                    self.cleanup_skill_delivery(ctx, &dst_dir, name)?;
+                    self.cleanup_skill_delivery(&dst_dir, name)?;
                 }
 
                 if plan.use_git_exclude {
@@ -202,16 +218,16 @@ impl InstallOrchestrator {
                 let allow_symlink = client.capabilities().supports_symlinked_skills;
                 let install = self.skill_installer.install(
                     name,
-                    cache_dir,
+                    &prepared.cache_dir,
                     &dst_dir,
                     self.link_mode,
                     force,
                     allow_symlink,
-                    resolved_version,
-                    constraint,
-                    registry,
+                    &prepared.resolved_version,
+                    &prepared.constraint,
+                    &prepared.registry,
                     decision.scope,
-                    git_metadata,
+                    prepared.git_metadata,
                 )?;
 
                 Ok(SkillInstallReport {
@@ -224,28 +240,105 @@ impl InstallOrchestrator {
         }
     }
 
-    /// Clean up skill delivery artifacts (filesystem + lockfile) without touching sift.toml.
-    fn cleanup_skill_delivery(
+    /// Prepare a skill source for installation.
+    ///
+    /// Resolves the source string, checks lockfile for cached versions,
+    /// and fetches from git if needed.
+    fn prepare_skill_source(
         &self,
-        ctx: &ClientContext,
-        dst_dir: &Path,
         name: &str,
-    ) -> anyhow::Result<()> {
+        source: &str,
+        force: bool,
+    ) -> anyhow::Result<PreparedSkillSource> {
+        let (resolved_source, registry_metadata) =
+            self.source_resolver.resolve_with_metadata(source)?;
+
+        match resolved_source {
+            ResolvedSource::Git(spec) => {
+                self.prepare_git_source(name, source, &spec, registry_metadata, force)
+            }
+            ResolvedSource::Local(spec) => {
+                if !spec.path.exists() {
+                    anyhow::bail!("Local skill path does not exist: {}", spec.path.display());
+                }
+                Ok(PreparedSkillSource {
+                    cache_dir: spec.path,
+                    resolved_version: "local".to_string(),
+                    constraint: "local".to_string(),
+                    registry: source.to_string(),
+                    git_metadata: None,
+                })
+            }
+        }
+    }
+
+    /// Prepare a git source, checking lockfile for cached versions.
+    fn prepare_git_source(
+        &self,
+        name: &str,
+        source: &str,
+        spec: &crate::git::GitSpec,
+        registry_metadata: Option<RegistryMetadata>,
+        force: bool,
+    ) -> anyhow::Result<PreparedSkillSource> {
+        GitFetcher::ensure_git_version()?;
+
+        let existing = self.lockfile_service.get_skill(name)?;
+
+        let fetch_result = if !force {
+            if let Some(locked) = existing.as_ref().filter(|e| e.is_installed()) {
+                FetchResult {
+                    cache_dir: locked
+                        .cache_src_path
+                        .clone()
+                        .unwrap_or_else(|| self.git_fetcher_cache_dir(name)),
+                    commit_sha: locked.resolved_version.clone(),
+                }
+            } else {
+                self.git_fetcher.fetch(spec, name, force)?
+            }
+        } else {
+            self.git_fetcher.fetch(spec, name, force)?
+        };
+
+        let constraint = spec.reference.clone().unwrap_or_else(|| "HEAD".to_string());
+        let registry = registry_metadata
+            .as_ref()
+            .map(|m| m.original_source.clone())
+            .unwrap_or_else(|| source.to_string());
+
+        let git_metadata = Some(GitSkillMetadata {
+            repo: spec.repo_url.clone(),
+            reference: spec.reference.clone(),
+            subdir: spec.subdir.clone(),
+        });
+
+        Ok(PreparedSkillSource {
+            cache_dir: fetch_result.cache_dir,
+            resolved_version: fetch_result.commit_sha,
+            constraint,
+            registry,
+            git_metadata,
+        })
+    }
+
+    /// Get the default cache directory for a skill.
+    fn git_fetcher_cache_dir(&self, skill_name: &str) -> PathBuf {
+        PathBuf::from(&format!(
+            "{}/cache/skills/{}",
+            self.git_fetcher.state_dir().display(),
+            skill_name
+        ))
+    }
+
+    /// Clean up skill delivery artifacts (filesystem + lockfile) without touching sift.toml.
+    fn cleanup_skill_delivery(&self, dst_dir: &Path, name: &str) -> anyhow::Result<()> {
         // Remove destination directory if exists
         remove_path_if_exists(dst_dir)
             .with_context(|| format!("Failed to remove skill directory: {}", dst_dir.display()))?;
 
-        // Remove lockfile entry
-        let store_dir = self.ownership_store.store_dir().to_path_buf();
-        let project_root = self
-            .ownership_store
-            .project_root()
-            .cloned()
-            .unwrap_or_else(|| ctx.project_root.clone());
-        let mut lockfile = LockfileStore::load(Some(project_root.clone()), store_dir.clone())?;
-        if lockfile.remove_skill(name).is_some() {
-            LockfileStore::save(Some(project_root), store_dir, &lockfile)?;
-        }
+        // Remove lockfile entry via service
+        let _ = self.lockfile_service.remove_skill(name)?;
         Ok(())
     }
 }

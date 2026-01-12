@@ -7,7 +7,6 @@
 //! - Scope-specific lookup behavior
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use sift_core::config::{
     ConfigScope, ConfigStore, McpConfigEntry, ProjectConfig, SiftConfig, SkillConfigEntry,
@@ -178,11 +177,11 @@ fn remove_mcp_local_scope_removes_project_entry() {
     let loaded = store.load().expect("Failed to load config");
     let project_key = store.project_root().to_string_lossy().to_string();
     assert!(
-        loaded.projects.get(&project_key).is_none()
+        !loaded.projects.contains_key(&project_key)
             || loaded
                 .projects
                 .get(&project_key)
-                .map_or(true, |p| p.mcp.is_empty()),
+                .is_none_or(|p| p.mcp.is_empty()),
         "Project entry should be cleaned up or empty"
     );
 }
@@ -327,11 +326,11 @@ fn remove_skill_local_scope_removes_project_entry() {
     let loaded = store.load().expect("Failed to load config");
     let project_key = store.project_root().to_string_lossy().to_string();
     assert!(
-        loaded.projects.get(&project_key).is_none()
+        !loaded.projects.contains_key(&project_key)
             || loaded
                 .projects
                 .get(&project_key)
-                .map_or(true, |p| p.skill.is_empty()),
+                .is_none_or(|p| p.skill.is_empty()),
         "Project entry should be cleaned up or empty"
     );
 }

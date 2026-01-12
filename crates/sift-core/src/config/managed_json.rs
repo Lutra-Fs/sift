@@ -7,7 +7,7 @@ use anyhow::Context;
 use serde_json::{Map, Value};
 
 use super::ownership::{hash_json, merge_owned_map};
-use super::ownership_store::OwnershipStore;
+use crate::version::store::LockfileService;
 
 #[derive(Debug)]
 pub struct ManagedJsonResult {
@@ -18,11 +18,11 @@ pub struct ManagedJsonResult {
 pub fn apply_managed_entries(
     config_path: &Path,
     desired: &Map<String, Value>,
-    ownership_store: &OwnershipStore,
+    lockfile_service: &LockfileService,
     force: bool,
 ) -> anyhow::Result<ManagedJsonResult> {
     let existing = load_json_map(config_path)?;
-    let ownership = ownership_store.load(config_path)?;
+    let ownership = lockfile_service.load_ownership(config_path, None)?;
 
     let merged = merge_owned_map(&existing, desired, &ownership, force)?;
 
@@ -32,7 +32,7 @@ pub fn apply_managed_entries(
     }
 
     write_json_map(config_path, &merged)?;
-    ownership_store.save(config_path, &updated_ownership)?;
+    lockfile_service.save_ownership(config_path, None, &updated_ownership)?;
 
     Ok(ManagedJsonResult {
         merged,
@@ -44,17 +44,17 @@ pub fn apply_managed_entries_in_field(
     config_path: &Path,
     field: &str,
     desired: &Map<String, Value>,
-    ownership_store: &OwnershipStore,
+    lockfile_service: &LockfileService,
     force: bool,
 ) -> anyhow::Result<ManagedJsonResult> {
-    apply_managed_entries_in_path(config_path, &[field], desired, ownership_store, force)
+    apply_managed_entries_in_path(config_path, &[field], desired, lockfile_service, force)
 }
 
 pub fn apply_managed_entries_in_path(
     config_path: &Path,
     path: &[&str],
     desired: &Map<String, Value>,
-    ownership_store: &OwnershipStore,
+    lockfile_service: &LockfileService,
     force: bool,
 ) -> anyhow::Result<ManagedJsonResult> {
     if path.is_empty() {
@@ -65,7 +65,7 @@ pub fn apply_managed_entries_in_path(
     let existing = extract_map_at_path(&root, path)?;
 
     let field_key = path.join(".");
-    let ownership = ownership_store.load_for_field(config_path, &field_key)?;
+    let ownership = lockfile_service.load_ownership(config_path, Some(&field_key))?;
     let merged_field = merge_owned_map(&existing, desired, &ownership, force)?;
 
     set_map_at_path(&mut root, path, merged_field.clone())?;
@@ -76,7 +76,7 @@ pub fn apply_managed_entries_in_path(
     }
 
     write_json_map(config_path, &root)?;
-    ownership_store.save_for_field(config_path, &field_key, &updated_ownership)?;
+    lockfile_service.save_ownership(config_path, Some(&field_key), &updated_ownership)?;
 
     Ok(ManagedJsonResult {
         merged: root,

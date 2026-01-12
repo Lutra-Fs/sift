@@ -12,7 +12,6 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 
 use sift_core::config::ownership::hash_json;
-use sift_core::config::ownership_store::OwnershipStore;
 use sift_core::config::{ConfigScope, McpConfigEntry, SiftConfig, SkillConfigEntry};
 use sift_core::fs::{LinkMode, tree_hash};
 use sift_core::status::{
@@ -22,6 +21,7 @@ use sift_core::status::{
 };
 use sift_core::version::lock::LockedMcpServer;
 use sift_core::version::lock::{LockedSkill, Lockfile};
+use sift_core::version::store::LockfileService;
 
 // =============================================================================
 // Test Helpers
@@ -908,9 +908,10 @@ transport = "stdio"
     let mut ownership = HashMap::new();
     ownership.insert("postgres".to_string(), entry_hash);
 
-    let ownership_store = OwnershipStore::new(state_dir.clone(), Some(project_root.to_path_buf()));
-    ownership_store
-        .save_for_field(&mcp_path, "mcpServers", &ownership)
+    let lockfile_service =
+        LockfileService::new(state_dir.clone(), Some(project_root.to_path_buf()));
+    lockfile_service
+        .save_ownership(&mcp_path, Some("mcpServers"), &ownership)
         .expect("Failed to save ownership");
 
     let status = collect_status_with_paths(project_root, &global_dir, &state_dir, None, true)
@@ -1005,10 +1006,11 @@ transport = "stdio"
     let mut ownership = HashMap::new();
     ownership.insert("postgres".to_string(), entry_hash);
 
-    let ownership_store = OwnershipStore::new(state_dir.clone(), Some(project_root.to_path_buf()));
+    let lockfile_service =
+        LockfileService::new(state_dir.clone(), Some(project_root.to_path_buf()));
     let field_key = format!("projects.{}.mcpServers", project_key);
-    ownership_store
-        .save_for_field(&claude_path, &field_key, &ownership)
+    lockfile_service
+        .save_ownership(&claude_path, Some(&field_key), &ownership)
         .expect("Failed to save ownership");
 
     let status = collect_status_with_paths(project_root, &global_dir, &state_dir, None, true)

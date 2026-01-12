@@ -91,7 +91,7 @@ fn uninstall_mcp_scope_all_removes_from_all_scopes() {
     let state_dir = temp.path().join("state").join("locks");
     let lockfile =
         LockfileStore::load(Some(project_root.clone()), state_dir).expect("Lockfile should load");
-    assert!(lockfile.mcp_servers.get("shared").is_none());
+    assert!(!lockfile.mcp_servers.contains_key("shared"));
 
     let global_config = temp.path().join("config").join("sift.toml");
     if global_config.exists() {
@@ -157,7 +157,7 @@ fn uninstall_skill_removes_config_lockfile_and_dst_dir() {
     let state_dir = temp.path().join("state").join("locks");
     let lockfile =
         LockfileStore::load(Some(project_root), state_dir).expect("Lockfile should load");
-    assert!(lockfile.skills.get(skill_name).is_none());
+    assert!(!lockfile.skills.contains_key(skill_name));
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn uninstall_scope_all_removes_local_project_global() {
     let state_dir = temp.path().join("state").join("locks");
     let lockfile =
         LockfileStore::load(Some(project_root.clone()), state_dir).expect("Lockfile should load");
-    assert!(lockfile.skills.get("all-scope").is_none());
+    assert!(!lockfile.skills.contains_key("all-scope"));
 
     let global_config = temp.path().join("config").join("sift.toml");
     if global_config.exists() {
@@ -298,7 +298,7 @@ fn uninstall_mcp_all_scopes_clears_lockfile_entry() {
     let state_dir = temp.path().join("state").join("locks");
     let lockfile =
         LockfileStore::load(Some(project_root), state_dir).expect("Lockfile should load");
-    assert!(lockfile.mcp_servers.get("clear-lock").is_none());
+    assert!(!lockfile.mcp_servers.contains_key("clear-lock"));
 }
 
 fn owned_config_path(root: &TempDir, path: &str) -> PathBuf {

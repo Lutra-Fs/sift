@@ -4,8 +4,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use sift_core::client::claude_code::{ClaudeCodeMcpWriter, ClaudeCodePaths};
-use sift_core::config::ownership_store::OwnershipStore;
 use sift_core::mcp::spec::McpResolvedServer;
+use sift_core::version::store::LockfileService;
 
 #[test]
 fn claude_code_project_writer_creates_mcp_json() {
@@ -15,8 +15,8 @@ fn claude_code_project_writer_creates_mcp_json() {
     std::fs::create_dir_all(&project).unwrap();
 
     let paths = ClaudeCodePaths::new(home.clone(), project.clone());
-    let ownership_store = OwnershipStore::new(temp.path().join("state"), Some(project.clone()));
-    let writer = ClaudeCodeMcpWriter::new(paths, ownership_store);
+    let lockfile_service = LockfileService::new(temp.path().join("state"), Some(project.clone()));
+    let writer = ClaudeCodeMcpWriter::new(paths, lockfile_service);
 
     let servers = vec![McpResolvedServer::stdio(
         "local".to_string(),
@@ -43,8 +43,8 @@ fn claude_code_user_writer_creates_claude_json() {
     std::fs::create_dir_all(&project).unwrap();
 
     let paths = ClaudeCodePaths::new(home.clone(), project.clone());
-    let ownership_store = OwnershipStore::new(temp.path().join("state"), Some(project.clone()));
-    let writer = ClaudeCodeMcpWriter::new(paths, ownership_store);
+    let lockfile_service = LockfileService::new(temp.path().join("state"), Some(project.clone()));
+    let writer = ClaudeCodeMcpWriter::new(paths, lockfile_service);
 
     let servers = vec![McpResolvedServer::http(
         "remote".to_string(),
@@ -70,8 +70,8 @@ fn claude_code_local_writer_creates_project_entry() {
     std::fs::create_dir_all(&project).unwrap();
 
     let paths = ClaudeCodePaths::new(home.clone(), project.clone());
-    let ownership_store = OwnershipStore::new(temp.path().join("state"), Some(project.clone()));
-    let writer = ClaudeCodeMcpWriter::new(paths, ownership_store);
+    let lockfile_service = LockfileService::new(temp.path().join("state"), Some(project.clone()));
+    let writer = ClaudeCodeMcpWriter::new(paths, lockfile_service);
 
     let servers = vec![McpResolvedServer::stdio(
         "local".to_string(),
@@ -108,8 +108,8 @@ fn claude_code_apply_scope_routes_to_project() {
     std::fs::create_dir_all(&project).unwrap();
 
     let paths = ClaudeCodePaths::new(home.clone(), project.clone());
-    let ownership_store = OwnershipStore::new(temp.path().join("state"), Some(project.clone()));
-    let writer = ClaudeCodeMcpWriter::new(paths, ownership_store);
+    let lockfile_service = LockfileService::new(temp.path().join("state"), Some(project.clone()));
+    let writer = ClaudeCodeMcpWriter::new(paths, lockfile_service);
 
     let servers = vec![McpResolvedServer::stdio(
         "local".to_string(),

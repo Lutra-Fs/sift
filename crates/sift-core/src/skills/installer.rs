@@ -8,7 +8,7 @@ use crate::config::ConfigScope;
 use crate::fs::{LinkMode, hash_tree};
 use crate::skills::linker::{LinkerOptions, deliver_dir_managed};
 use crate::version::lock::LockedSkill;
-use crate::version::store::LockfileStore;
+use crate::version::store::LockfileService;
 
 #[derive(Debug)]
 pub struct SkillInstallResult {
@@ -24,16 +24,19 @@ pub struct GitSkillMetadata {
 
 #[derive(Debug)]
 pub struct SkillInstaller {
-    store_dir: PathBuf,
-    project_root: Option<PathBuf>,
+    service: LockfileService,
 }
 
 impl SkillInstaller {
     pub fn new(store_dir: PathBuf, project_root: Option<PathBuf>) -> Self {
         Self {
-            store_dir,
-            project_root,
+            service: LockfileService::new(store_dir, project_root),
         }
+    }
+
+    /// Create from an existing LockfileService (for sharing).
+    pub fn from_service(service: LockfileService) -> Self {
+        Self { service }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -54,7 +57,7 @@ impl SkillInstaller {
         let cache_hash = hash_tree(cache_dir)
             .with_context(|| format!("Failed to hash cache: {}", cache_dir.display()))?;
 
-        let mut lockfile = LockfileStore::load(self.project_root.clone(), self.store_dir.clone())?;
+        let lockfile = self.service.load()?;
         let existing = lockfile.get_skill(name);
         let expected_hash = if force {
             &cache_hash
@@ -89,8 +92,7 @@ impl SkillInstaller {
             locked = locked.with_git_metadata(metadata.repo, metadata.reference, metadata.subdir);
         }
 
-        lockfile.add_skill(name.to_string(), locked);
-        LockfileStore::save(self.project_root.clone(), self.store_dir.clone(), &lockfile)?;
+        self.service.add_skill(name, locked)?;
 
         Ok(SkillInstallResult {
             changed: report.changed,

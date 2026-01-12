@@ -9,19 +9,16 @@ use std::path::{Path, PathBuf};
 use crate::client::ClientAdapter;
 use crate::client::ClientContext;
 use crate::client::claude_code::ClaudeCodeClient;
-use crate::config::{
-    ConfigScope, ConfigStore, McpConfigEntry, OwnershipStore, SkillConfigEntry, merge_configs,
-};
+use crate::config::{ConfigScope, ConfigStore, McpConfigEntry, SkillConfigEntry, merge_configs};
 use crate::fs::LinkMode;
-use crate::git::GitFetcher;
 use crate::mcp::spec::McpResolvedServer;
 use crate::orchestration::orchestrator::{InstallMcpRequest, InstallOrchestrator};
 use crate::orchestration::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
 };
-use crate::skills::installer::{GitSkillMetadata, SkillInstaller};
-use crate::source::{ResolvedSource, SourceResolver};
-use crate::version::store::LockfileStore;
+use crate::skills::installer::SkillInstaller;
+use crate::source::SourceResolver;
+use crate::version::store::LockfileService;
 
 /// Default runtime for MCP servers when not specified
 const DEFAULT_RUNTIME: &str = "npx";
@@ -67,18 +64,6 @@ pub struct InstallOptions {
     pub headers: Vec<String>,
     /// Explicit stdio command for MCP servers
     pub command: Vec<String>,
-}
-
-struct ContinueSkillInstallRequest<'a> {
-    name: &'a str,
-    source: &'a str,
-    entry: &'a SkillConfigEntry,
-    options: &'a InstallOptions,
-    resolved_source: &'a ResolvedSource,
-    registry_metadata: Option<&'a crate::source::RegistryMetadata>,
-    warnings: Vec<String>,
-    client: &'a ClaudeCodeClient,
-    ctx: &'a ClientContext,
 }
 
 impl InstallOptions {
@@ -448,12 +433,16 @@ impl InstallCommand {
 
         // Create orchestrator
         let config_store = self.create_config_store(config_scope)?;
-        let ownership_store = self.create_ownership_store();
+        let lockfile_service = self.create_lockfile_service();
         let skill_installer = self.create_skill_installer();
+        let source_resolver = self.create_source_resolver()?;
+        let git_fetcher = self.create_git_fetcher();
         let orchestrator = InstallOrchestrator::new(
             config_store,
-            ownership_store,
+            lockfile_service,
             skill_installer,
+            source_resolver,
+            git_fetcher,
             self.link_mode,
         );
 
@@ -485,7 +474,7 @@ impl InstallCommand {
 
     /// Install a skill
     fn install_skill(&self, options: &InstallOptions) -> anyhow::Result<InstallReport> {
-        // Build config entry
+        // Resolve name and source
         let resolved = self.resolve_name_and_source(
             &options.name,
             options.source.as_deref(),
@@ -502,31 +491,20 @@ impl InstallCommand {
         warnings.extend(resolved_warnings);
         warnings.extend(self.registry_warnings(source_is_registry, source_explicit)?);
 
-        let entry = SkillConfigEntry {
-            source: source.clone(),
-            version: options.version.clone(),
-            targets: None,
-            ignore_targets: None,
-            reset_version: false,
-        };
-
         // Create client adapter and context
         let client = ClaudeCodeClient::new();
         let ctx = ClientContext::new(self.home_dir.clone(), self.project_root.clone());
 
-        // Resolve source to a fetchable specification
-        let source_resolver = self.create_source_resolver()?;
-
         // Check if this is a registry source that might have nested marketplaces
         if let Some(registry_part) = source.strip_prefix("registry:") {
-            // Try to expand for nested marketplaces
+            let source_resolver = self.create_source_resolver()?;
             let resolutions = source_resolver.resolve_registry_with_expansion(registry_part)?;
 
             // Check for collisions
             crate::source::SourceResolver::detect_collisions(&resolutions)
                 .map_err(|e| anyhow::anyhow!("Name collision detected: {}", e))?;
 
-            // If first resolution is a group, install all nested plugins directly
+            // If first resolution is a group, install all nested plugins
             if resolutions
                 .first()
                 .map(|r| r.metadata.is_group)
@@ -541,50 +519,37 @@ impl InstallCommand {
                         continue; // Skip the parent group entry
                     }
 
-                    // Install each nested plugin directly using the resolved GitSpec
-                    // Use short name (first alias) for filesystem path, canonical name for identification
+                    // Use short name (first alias) for filesystem path
                     let nested_name = resolution
                         .metadata
                         .aliases
                         .first()
                         .cloned()
                         .unwrap_or_else(|| resolution.metadata.skill_name.clone());
-                    let resolved_source = ResolvedSource::Git(resolution.git_spec.clone());
-                    let registry_metadata = Some(resolution.metadata.clone());
 
-                    // Build config entry for this nested plugin
                     let nested_entry = SkillConfigEntry {
                         source: resolution.metadata.original_source.clone(),
-                        version: None, // Use latest/default
+                        version: None,
                         targets: None,
                         ignore_targets: None,
                         reset_version: false,
                     };
 
-                    // Create options for nested plugin
-                    let mut nested_options = options.clone();
-                    nested_options.name = nested_name.clone();
-                    nested_options.source = Some(resolution.metadata.original_source.clone());
-
-                    let request = ContinueSkillInstallRequest {
-                        name: &nested_name,
-                        source: &resolution.metadata.original_source,
-                        entry: &nested_entry,
-                        options: &nested_options,
-                        resolved_source: &resolved_source,
-                        registry_metadata: registry_metadata.as_ref(),
-                        warnings: Vec::new(),
-                        client: &client,
-                        ctx: &ctx,
-                    };
-                    match self.continue_skill_install(request) {
+                    match self.install_skill_with_orchestrator(
+                        &client,
+                        &ctx,
+                        &nested_name,
+                        nested_entry,
+                        &resolution.metadata.original_source,
+                        options.scope,
+                        options.force,
+                    ) {
                         Ok(report) => {
                             changed = changed || report.changed;
                             applied = applied || report.applied;
                             nested_warnings.extend(report.warnings);
                         }
                         Err(e) => {
-                            // If installation fails, report but continue
                             nested_warnings.push(format!(
                                 "Failed to install nested plugin '{}': {}",
                                 nested_name, e
@@ -593,7 +558,6 @@ impl InstallCommand {
                     }
                 }
 
-                // Build combined name for all installed nested plugins
                 let nested_names: Vec<_> = resolutions
                     .iter()
                     .filter(|r| !r.metadata.is_group)
@@ -601,7 +565,6 @@ impl InstallCommand {
                     .collect();
                 let combined_name = format!("{} ({})", name, nested_names.join(", "));
 
-                // Return combined report
                 return Ok(InstallReport {
                     name: combined_name,
                     changed,
@@ -609,126 +572,51 @@ impl InstallCommand {
                     warnings: nested_warnings,
                 });
             }
-
-            // No nested marketplace or single plugin - use first resolution
-            let first_resolution = &resolutions[0];
-            let resolved_source = ResolvedSource::Git(first_resolution.git_spec.clone());
-            let registry_metadata = Some(first_resolution.metadata.clone());
-
-            let request = ContinueSkillInstallRequest {
-                name: &name,
-                source: &source,
-                entry: &entry,
-                options,
-                resolved_source: &resolved_source,
-                registry_metadata: registry_metadata.as_ref(),
-                warnings,
-                client: &client,
-                ctx: &ctx,
-            };
-            return self.continue_skill_install(request);
         }
 
-        // Non-registry source - use normal resolution
-        let (resolved_source, registry_metadata) =
-            source_resolver.resolve_with_metadata(&source)?;
-
-        let request = ContinueSkillInstallRequest {
-            name: &name,
-            source: &source,
-            entry: &entry,
-            options,
-            resolved_source: &resolved_source,
-            registry_metadata: registry_metadata.as_ref(),
-            warnings,
-            client: &client,
-            ctx: &ctx,
+        // Standard installation path (non-group or non-registry sources)
+        let entry = SkillConfigEntry {
+            source: source.clone(),
+            version: options.version.clone(),
+            targets: None,
+            ignore_targets: None,
+            reset_version: false,
         };
-        self.continue_skill_install(request)
+
+        let report = self.install_skill_with_orchestrator(
+            &client,
+            &ctx,
+            &name,
+            entry,
+            &source,
+            options.scope,
+            options.force,
+        )?;
+
+        let mut all_warnings = warnings;
+        all_warnings.extend(report.warnings);
+        Ok(InstallReport {
+            name,
+            changed: report.changed,
+            applied: report.applied,
+            warnings: all_warnings,
+        })
     }
 
-    /// Continue skill installation after source resolution.
-    ///
-    /// This helper method handles the actual installation logic after the source
-    /// has been resolved (either normally or via nested marketplace expansion).
-    fn continue_skill_install(
+    /// Helper to install a skill using the orchestrator's active method.
+    #[allow(clippy::too_many_arguments)]
+    fn install_skill_with_orchestrator(
         &self,
-        request: ContinueSkillInstallRequest<'_>,
+        client: &ClaudeCodeClient,
+        ctx: &ClientContext,
+        name: &str,
+        entry: SkillConfigEntry,
+        source: &str,
+        scope: Option<ConfigScope>,
+        force: bool,
     ) -> anyhow::Result<InstallReport> {
-        let ContinueSkillInstallRequest {
-            name,
-            source,
-            entry,
-            options,
-            resolved_source,
-            registry_metadata,
-            mut warnings,
-            client,
-            ctx,
-        } = request;
-        let mut git_metadata = None;
-        let mut resolved_version = options
-            .version
-            .clone()
-            .unwrap_or_else(|| DEFAULT_VERSION.to_string());
-        let mut constraint = resolved_version.clone();
-        let mut registry = "default".to_string();
-        let cache_dir;
-
-        match resolved_source {
-            ResolvedSource::Git(spec) => {
-                GitFetcher::ensure_git_version()?;
-
-                let fetcher = GitFetcher::new(self.state_dir.clone());
-
-                // Check lockfile for existing resolved version
-                let lockfile = LockfileStore::load(
-                    Some(self.project_root.clone()),
-                    self.state_dir.join("locks"),
-                )?;
-                let existing = lockfile.skills.get(name);
-
-                let result = if !options.force {
-                    if let Some(locked) = existing.filter(|e| e.is_installed()) {
-                        // Use cached version from lockfile
-                        crate::git::FetchResult {
-                            cache_dir: locked.cache_src_path.clone().unwrap_or_else(|| {
-                                self.state_dir.join("cache").join("skills").join(name)
-                            }),
-                            commit_sha: locked.resolved_version.clone(),
-                        }
-                    } else {
-                        fetcher.fetch(spec, name, options.force)?
-                    }
-                } else {
-                    fetcher.fetch(spec, name, options.force)?
-                };
-
-                cache_dir = result.cache_dir;
-                resolved_version = result.commit_sha;
-                constraint = spec.reference.clone().unwrap_or_else(|| "HEAD".to_string());
-                registry = if let Some(meta) = registry_metadata {
-                    meta.original_source.clone()
-                } else {
-                    source.to_string()
-                };
-                git_metadata = Some(GitSkillMetadata {
-                    repo: spec.repo_url.clone(),
-                    reference: spec.reference.clone(),
-                    subdir: spec.subdir.clone(),
-                });
-            }
-            ResolvedSource::Local(spec) => {
-                cache_dir = spec.path.clone();
-                // For local sources, we don't fetch - just use the path directly
-                if !cache_dir.exists() {
-                    anyhow::bail!("Local skill path does not exist: {}", cache_dir.display());
-                }
-            }
-        }
-
         // Determine scope request
-        let scope_request = match options.scope {
+        let scope_request = match scope {
             Some(s) => ScopeRequest::Explicit(s),
             None => ScopeRequest::Auto,
         };
@@ -743,36 +631,28 @@ impl InstallCommand {
 
         let config_scope = match &resolution {
             ScopeResolution::Apply(decision) => decision.scope,
-            ScopeResolution::Skip { .. } => options.scope.unwrap_or(ConfigScope::PerProjectShared),
+            ScopeResolution::Skip { .. } => scope.unwrap_or(ConfigScope::PerProjectShared),
         };
 
-        // Create orchestrator
+        // Create orchestrator with all active dependencies
         let config_store = self.create_config_store(config_scope)?;
-        let ownership_store = self.create_ownership_store();
+        let lockfile_service = self.create_lockfile_service();
         let skill_installer = self.create_skill_installer();
+        let source_resolver = self.create_source_resolver()?;
+        let git_fetcher = self.create_git_fetcher();
         let orchestrator = InstallOrchestrator::new(
             config_store,
-            ownership_store,
+            lockfile_service,
             skill_installer,
+            source_resolver,
+            git_fetcher,
             self.link_mode,
         );
 
-        // Execute installation
-        let report = orchestrator.install_skill(
-            client,
-            ctx,
-            name,
-            entry.clone(),
-            &cache_dir,
-            resolution,
-            options.force,
-            &resolved_version,
-            &constraint,
-            &registry,
-            git_metadata,
-        )?;
+        // Use the new active installation method
+        let report = orchestrator
+            .install_skill_from_source(client, ctx, name, entry, source, resolution, force)?;
 
-        warnings.extend(report.warnings);
         Ok(InstallReport {
             name: name.to_string(),
             changed: matches!(
@@ -780,7 +660,7 @@ impl InstallCommand {
                 crate::orchestration::InstallOutcome::Changed
             ),
             applied: report.applied,
-            warnings,
+            warnings: report.warnings,
         })
     }
 
@@ -794,8 +674,8 @@ impl InstallCommand {
         ))
     }
 
-    fn create_ownership_store(&self) -> OwnershipStore {
-        OwnershipStore::new(
+    fn create_lockfile_service(&self) -> LockfileService {
+        LockfileService::new(
             self.state_dir.join("locks"),
             Some(self.project_root.clone()),
         )
@@ -806,6 +686,10 @@ impl InstallCommand {
             self.state_dir.join("locks"),
             Some(self.project_root.clone()),
         )
+    }
+
+    fn create_git_fetcher(&self) -> crate::git::GitFetcher {
+        crate::git::GitFetcher::new(self.state_dir.clone())
     }
 
     fn create_source_resolver(&self) -> anyhow::Result<SourceResolver> {

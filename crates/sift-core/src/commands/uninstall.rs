@@ -6,11 +6,11 @@ use std::path::PathBuf;
 
 use crate::client::claude_code::ClaudeCodeClient;
 use crate::client::{ClientAdapter, ClientContext};
-use crate::config::{ConfigScope, ConfigStore, OwnershipStore, merge_configs};
+use crate::config::{ConfigScope, ConfigStore, merge_configs};
 use crate::fs::LinkMode;
 use crate::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use crate::orchestration::uninstall::UninstallOrchestrator;
-use crate::version::store::LockfileStore;
+use crate::version::store::{LockfileService, LockfileStore};
 
 /// What to uninstall: MCP server or skill
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,8 +222,8 @@ impl UninstallCommand {
 
             let scope = self.normalize_scope(options, scope, &client, repo_status)?;
             let config_store = self.create_config_store(scope)?;
-            let ownership_store = self.create_ownership_store();
-            let orchestrator = UninstallOrchestrator::new(config_store, ownership_store);
+            let lockfile_service = self.create_lockfile_service();
+            let orchestrator = UninstallOrchestrator::new(config_store, lockfile_service);
 
             let report = match options.target {
                 UninstallTarget::Mcp => orchestrator.uninstall_mcp(&client, &ctx, &options.name)?,
@@ -334,8 +334,8 @@ impl UninstallCommand {
         ))
     }
 
-    fn create_ownership_store(&self) -> OwnershipStore {
-        OwnershipStore::new(
+    fn create_lockfile_service(&self) -> LockfileService {
+        LockfileService::new(
             self.state_dir.join("locks"),
             Some(self.project_root.clone()),
         )

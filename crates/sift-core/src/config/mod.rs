@@ -8,7 +8,6 @@
 pub mod managed_json;
 pub mod merge;
 pub mod ownership;
-pub mod ownership_store;
 pub mod parser;
 pub mod paths;
 pub mod schema;
@@ -20,7 +19,6 @@ use std::path::PathBuf;
 // Re-export the new module types
 pub use managed_json::ManagedJsonResult;
 pub use merge::merge_configs;
-pub use ownership_store::OwnershipStore;
 pub use parser::{parse_sift_toml, parse_sift_toml_str, to_toml};
 pub use paths::config_path_for_scope;
 pub use schema::{

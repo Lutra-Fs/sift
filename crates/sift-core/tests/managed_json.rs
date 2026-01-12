@@ -5,13 +5,13 @@ use tempfile::TempDir;
 
 use sift_core::config::managed_json::apply_managed_entries;
 use sift_core::config::ownership::hash_json;
-use sift_core::config::ownership_store::OwnershipStore;
+use sift_core::version::store::LockfileService;
 
 #[test]
 fn apply_managed_entries_preserves_user_entries() {
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("config.json");
-    let ownership_store = OwnershipStore::new(temp.path().to_path_buf(), None);
+    let lockfile_service = LockfileService::new(temp.path().to_path_buf(), None);
 
     let existing = json!({
         "user": {"command": "echo"}
@@ -24,7 +24,7 @@ fn apply_managed_entries_preserves_user_entries() {
         json!({"command": "npx", "args": ["pkg@1.2.3"]}),
     );
 
-    let result = apply_managed_entries(&config_path, &desired, &ownership_store, false).unwrap();
+    let result = apply_managed_entries(&config_path, &desired, &lockfile_service, false).unwrap();
 
     assert!(result.merged.contains_key("user"));
     assert!(result.merged.contains_key("managed"));
@@ -35,7 +35,7 @@ fn apply_managed_entries_preserves_user_entries() {
 fn apply_managed_entries_refuses_modified_managed_entry() {
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("config.json");
-    let ownership_store = OwnershipStore::new(temp.path().to_path_buf(), None);
+    let lockfile_service = LockfileService::new(temp.path().to_path_buf(), None);
 
     let existing = json!({
         "managed": {"command": "npx", "args": ["pkg@1.0.0"]}
@@ -47,7 +47,9 @@ fn apply_managed_entries_refuses_modified_managed_entry() {
         "managed".to_string(),
         hash_json(&json!({"command": "npx", "args": ["pkg@0.9.0"]})),
     );
-    ownership_store.save(&config_path, &ownership).unwrap();
+    lockfile_service
+        .save_ownership(&config_path, None, &ownership)
+        .unwrap();
 
     let mut desired = Map::new();
     desired.insert(
@@ -55,7 +57,7 @@ fn apply_managed_entries_refuses_modified_managed_entry() {
         json!({"command": "npx", "args": ["pkg@1.2.3"]}),
     );
 
-    let result = apply_managed_entries(&config_path, &desired, &ownership_store, false);
+    let result = apply_managed_entries(&config_path, &desired, &lockfile_service, false);
 
     assert!(result.is_err());
 }
@@ -64,7 +66,7 @@ fn apply_managed_entries_refuses_modified_managed_entry() {
 fn apply_managed_entries_in_field() {
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("config.json");
-    let ownership_store = OwnershipStore::new(temp.path().to_path_buf(), None);
+    let lockfile_service = LockfileService::new(temp.path().to_path_buf(), None);
 
     let existing = json!({
         "mcpServers": {
@@ -83,7 +85,7 @@ fn apply_managed_entries_in_field() {
         &config_path,
         "mcpServers",
         &desired,
-        &ownership_store,
+        &lockfile_service,
         false,
     )
     .unwrap();
@@ -102,7 +104,7 @@ fn apply_managed_entries_in_field() {
 fn apply_managed_entries_in_nested_path() {
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("config.json");
-    let ownership_store = OwnershipStore::new(temp.path().to_path_buf(), None);
+    let lockfile_service = LockfileService::new(temp.path().to_path_buf(), None);
 
     let mut desired = Map::new();
     desired.insert(
@@ -114,7 +116,7 @@ fn apply_managed_entries_in_nested_path() {
         &config_path,
         &["projects", "/tmp/project", "mcpServers"],
         &desired,
-        &ownership_store,
+        &lockfile_service,
         false,
     )
     .unwrap();
