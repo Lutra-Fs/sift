@@ -10,7 +10,13 @@ use std::path::PathBuf;
 use crate::mcp::spec::McpResolvedServer;
 use crate::types::ConfigScope;
 
+pub mod amp;
 pub mod claude_code;
+pub mod codex;
+pub mod droid;
+pub mod gemini_cli;
+pub mod opencode;
+pub mod vscode;
 
 /// Client configuration from sift.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]

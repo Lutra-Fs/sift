@@ -189,8 +189,10 @@ Sift does **not** manage plugins installed directly inside Claude Code. Sift onl
 Sift uses a **Resource-Oriented** design (`noun verb`) with shortcuts.
 
 #### **Common Commands**
-*   **Setup**: `sift init`, `sift install` (alias `add`).
-*   **Maintenance**: `sift status`, `sift upgrade`, `sift apply`.
+*   **Install/Sync**: `sift install` (alias `add`).
+    *   `sift install <package>`: Add a package (auto-creates `sift.toml` if missing).
+    *   `sift install`: Sync system state with `sift.toml` (download missing, regenerate configs).
+*   **Maintenance**: `sift status`, `sift upgrade`.
 *   **Cleanup**: `sift uninstall` (alias `rm`).
 *   **Inspection**: `sift list` (alias `ls`), `sift doctor`.
 *   **Resource based**: `sift mcp <verb>`, `sift skill <verb>`, `sift registry <verb>`.

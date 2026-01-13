@@ -11,7 +11,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::client::amp::AmpClient;
 use crate::client::claude_code::ClaudeCodeClient;
+use crate::client::codex::CodexClient;
+use crate::client::droid::DroidClient;
+use crate::client::gemini_cli::GeminiCliClient;
+use crate::client::opencode::OpenCodeClient;
+use crate::client::vscode::VsCodeClient;
 use crate::client::{ClientAdapter, ClientContext, PathRoot};
 use crate::config::SiftConfig;
 use crate::config::schema::{McpConfigEntry, SkillConfigEntry};
@@ -478,8 +484,16 @@ pub fn collect_status_with_paths(
     let lockfile_service =
         LockfileService::new(state_dir.to_path_buf(), Some(project_root.to_path_buf()));
 
-    // 4. Get registered clients (currently only Claude Code)
-    let clients: Vec<Box<dyn ClientAdapter>> = vec![Box::new(ClaudeCodeClient::new())];
+    // 4. Get registered clients
+    let clients: Vec<Box<dyn ClientAdapter>> = vec![
+        Box::new(AmpClient::new()),
+        Box::new(ClaudeCodeClient::new()),
+        Box::new(CodexClient::new()),
+        Box::new(DroidClient::new()),
+        Box::new(GeminiCliClient::new()),
+        Box::new(OpenCodeClient::new()),
+        Box::new(VsCodeClient::new()),
+    ];
 
     // 5. Build client context
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -1050,10 +1064,8 @@ enabled = false
             "Client should be disabled based on config"
         );
 
-        // Verify that another client (simulated by absence of config) would be enabled by default
-        // Since we only have one registered client implementation (ClaudeCodeClient),
-        // we can't easily check a different ID without mocking.
-        // But we can check the default case by using an empty config.
+        // Verify that another client would be enabled by default when not explicitly configured.
+        // We can check the default case by using an empty config.
 
         let global_dir_empty = tempdir().unwrap();
         let status_default = collect_status_with_paths(

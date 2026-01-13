@@ -918,11 +918,12 @@ transport = "stdio"
     let status = collect_status_with_paths(project_root, &global_dir, &state_dir, None, true)
         .expect("collect_status should succeed");
 
+    // Filter for claude-code deployments specifically since we created a .mcp.json file
     let deployments = status
         .mcp_servers
         .iter()
         .flat_map(|m| m.deployments.iter())
-        .filter(|d| d.scope == ConfigScope::PerProjectShared)
+        .filter(|d| d.scope == ConfigScope::PerProjectShared && d.client_id == "claude-code")
         .collect::<Vec<_>>();
     assert_eq!(deployments.len(), 1);
     assert_eq!(deployments[0].integrity, DeploymentIntegrity::Ok);
@@ -1017,11 +1018,12 @@ transport = "stdio"
     let status = collect_status_with_paths(project_root, &global_dir, &state_dir, None, true)
         .expect("collect_status should succeed");
 
+    // Only Claude Code supports local scope, so filter for it
     let local_deployments = status
         .mcp_servers
         .iter()
         .flat_map(|m| m.deployments.iter())
-        .filter(|d| d.scope == ConfigScope::PerProjectLocal)
+        .filter(|d| d.scope == ConfigScope::PerProjectLocal && d.client_id == "claude-code")
         .collect::<Vec<_>>();
 
     assert_eq!(local_deployments.len(), 1);
@@ -1116,11 +1118,12 @@ version = "^1.0"
         .expect("Should find commit skill");
     assert_eq!(skill.state, EntryState::Ok);
 
+    // Filter for claude-code client since the skill was created at ~/.claude/skills/
     let deployment = skill
         .deployments
         .iter()
-        .find(|d| d.scope == ConfigScope::Global)
-        .expect("Should have global deployment");
+        .find(|d| d.scope == ConfigScope::Global && d.client_id == "claude-code")
+        .expect("Should have global deployment for claude-code");
     assert_eq!(deployment.integrity, SkillIntegrity::Installed);
     assert_eq!(deployment.dst_path, skill_dir);
     assert_eq!(status.summary.issues, 0);
@@ -1184,7 +1187,7 @@ transport = "stdio"
     assert_eq!(status.mcp_servers.len(), 1);
 
     // With verify=true, should have deployments for each client scope
-    // Claude Code supports 3 MCP scopes: Global, Shared, Local
+    // Multiple clients are registered, each generating deployment checks
     let deployments = &status.mcp_servers[0].deployments;
     assert!(
         !deployments.is_empty(),
@@ -1194,8 +1197,17 @@ transport = "stdio"
     // All should be NotDeployed since we haven't installed anything
     for dep in deployments {
         assert_eq!(dep.integrity, DeploymentIntegrity::NotDeployed);
-        assert_eq!(dep.client_id, "claude-code");
     }
+
+    // Verify claude-code is among the clients
+    let claude_code_deployments: Vec<_> = deployments
+        .iter()
+        .filter(|d| d.client_id == "claude-code")
+        .collect();
+    assert!(
+        !claude_code_deployments.is_empty(),
+        "Should have deployments for claude-code client"
+    );
 }
 
 /// Test: collect_status without verify=false has empty deployments
