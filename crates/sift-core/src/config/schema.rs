@@ -95,6 +95,19 @@ pub struct McpConfigEntry {
     pub reset_env_all: bool,
 }
 
+impl McpConfigEntry {
+    /// Check if this MCP server should be deployed to a client
+    pub fn should_deploy_to(&self, client_id: &str) -> bool {
+        if let Some(ref targets) = self.targets {
+            return targets.contains(&client_id.to_string());
+        }
+        if let Some(ref ignore) = self.ignore_targets {
+            return !ignore.contains(&client_id.to_string());
+        }
+        true
+    }
+}
+
 impl TryFrom<McpConfigEntry> for crate::mcp::McpConfig {
     type Error = anyhow::Error;
 
@@ -142,6 +155,19 @@ pub struct SkillConfigEntry {
     /// Reset version to None (clear inherited version)
     #[serde(default)]
     pub reset_version: bool,
+}
+
+impl SkillConfigEntry {
+    /// Check if this skill should be deployed to a client
+    pub fn should_deploy_to(&self, client_id: &str) -> bool {
+        if let Some(ref targets) = self.targets {
+            return targets.contains(&client_id.to_string());
+        }
+        if let Some(ref ignore) = self.ignore_targets {
+            return !ignore.contains(&client_id.to_string());
+        }
+        true
+    }
 }
 
 impl TryFrom<SkillConfigEntry> for crate::skills::SkillConfig {

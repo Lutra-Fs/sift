@@ -547,6 +547,11 @@ pub fn collect_status_with_paths(
                         continue;
                     }
 
+                    // Check if this entry should be deployed to this client
+                    if !entry.should_deploy_to(client.id()) {
+                        continue;
+                    }
+
                     if let Ok(plan) = client.plan_skill(&ctx, scope) {
                         let root_path = resolve_plan_path(&ctx, plan.root, &plan.relative_path);
                         let skill_dst = root_path.join(name);
@@ -633,6 +638,11 @@ pub fn collect_status_with_paths(
 
                 for (scope, supported) in mcp_client_scopes {
                     if !supported {
+                        continue;
+                    }
+
+                    // Check if this entry should be deployed to this client
+                    if !entry.should_deploy_to(client.id()) {
                         continue;
                     }
 

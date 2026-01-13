@@ -65,6 +65,10 @@ pub struct InstallOptions {
     pub headers: Vec<String>,
     /// Explicit stdio command for MCP servers
     pub command: Vec<String>,
+    /// Target clients (whitelist) - only deploy to these clients
+    pub targets: Option<Vec<String>>,
+    /// Ignore clients (blacklist) - deploy to all clients except these
+    pub ignore_targets: Option<Vec<String>>,
 }
 
 impl InstallOptions {
@@ -84,6 +88,8 @@ impl InstallOptions {
             env: Vec::new(),
             headers: Vec::new(),
             command: Vec::new(),
+            targets: None,
+            ignore_targets: None,
         }
     }
 
@@ -103,6 +109,8 @@ impl InstallOptions {
             env: Vec::new(),
             headers: Vec::new(),
             command: Vec::new(),
+            targets: None,
+            ignore_targets: None,
         }
     }
 
@@ -173,6 +181,26 @@ impl InstallOptions {
         S: Into<String>,
     {
         self.command = command.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Set target clients (whitelist) - only deploy to these clients
+    pub fn with_targets<I, S>(mut self, targets: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.targets = Some(targets.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Set ignored clients (blacklist) - deploy to all clients except these
+    pub fn with_ignore_targets<I, S>(mut self, ignore_targets: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.ignore_targets = Some(ignore_targets.into_iter().map(Into::into).collect());
         self
     }
 }
@@ -397,8 +425,8 @@ impl InstallCommand {
             args,
             url,
             headers,
-            targets: None,
-            ignore_targets: None,
+            targets: options.targets.clone(),
+            ignore_targets: options.ignore_targets.clone(),
             env,
             reset_targets: false,
             reset_ignore_targets: false,
@@ -531,8 +559,8 @@ impl InstallCommand {
                     let nested_entry = SkillConfigEntry {
                         source: resolution.metadata.original_source.clone(),
                         version: None,
-                        targets: None,
-                        ignore_targets: None,
+                        targets: options.targets.clone(),
+                        ignore_targets: options.ignore_targets.clone(),
                         reset_version: false,
                     };
 
@@ -579,8 +607,8 @@ impl InstallCommand {
         let entry = SkillConfigEntry {
             source: source.clone(),
             version: options.version.clone(),
-            targets: None,
-            ignore_targets: None,
+            targets: options.targets.clone(),
+            ignore_targets: options.ignore_targets.clone(),
             reset_version: false,
         };
 

@@ -92,6 +92,9 @@ impl InstallOrchestrator {
         ctx: &ClientContext,
         req: InstallMcpRequest<'_>,
     ) -> anyhow::Result<InstallReport> {
+        // Check if this client is targeted by the entry
+        let should_deploy = req.entry.should_deploy_to(client.id());
+
         match req.resolution {
             ScopeResolution::Skip { warning } => {
                 let entry = req.entry.clone();
@@ -104,6 +107,20 @@ impl InstallOrchestrator {
                 })
             }
             ScopeResolution::Apply(decision) => {
+                // Skip deployment if client is not targeted
+                if !should_deploy {
+                    let entry = req.entry.clone();
+                    let outcome = self.install.install_mcp(req.name, req.entry, req.force)?;
+                    self.update_mcp_lockfile(req.name, &entry, req.declared_version)?;
+                    return Ok(InstallReport {
+                        outcome,
+                        warnings: vec![format!(
+                            "Skipping deployment to '{}': not in target clients",
+                            client.id()
+                        )],
+                        applied: false,
+                    });
+                }
                 let entry = req.entry.clone();
                 let outcome = self.install.install_mcp(req.name, req.entry, req.force)?;
                 let plan = client.plan_mcp(ctx, decision.scope, req.servers)?;
@@ -183,6 +200,9 @@ impl InstallOrchestrator {
         resolution: ScopeResolution,
         force: bool,
     ) -> anyhow::Result<SkillInstallReport> {
+        // Check if this client is targeted by the entry
+        let should_deploy = entry.should_deploy_to(client.id());
+
         match resolution {
             ScopeResolution::Skip { warning } => {
                 let outcome = self.install.install_skill(name, entry, force)?;
@@ -194,6 +214,19 @@ impl InstallOrchestrator {
                 })
             }
             ScopeResolution::Apply(decision) => {
+                // Skip deployment if client is not targeted
+                if !should_deploy {
+                    let outcome = self.install.install_skill(name, entry, force)?;
+                    return Ok(SkillInstallReport {
+                        outcome,
+                        warnings: vec![format!(
+                            "Skipping deployment to '{}': not in target clients",
+                            client.id()
+                        )],
+                        applied: false,
+                        install: None,
+                    });
+                }
                 let prepared = self.prepare_skill_source(name, source, force)?;
                 let outcome = self.install.install_skill(name, entry, force)?;
 
