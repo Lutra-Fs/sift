@@ -151,6 +151,10 @@ enum RegistrySubcommand {
         /// Overwrite existing registry with same name
         #[arg(long, short)]
         force: bool,
+
+        /// Output format
+        #[arg(short = 'o', long, default_value = "table")]
+        format: OutputFormat,
     },
 
     /// Remove a registry
@@ -165,6 +169,10 @@ enum RegistrySubcommand {
         /// Remove from all scopes
         #[arg(long)]
         all: bool,
+
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
 }
 
@@ -265,6 +273,9 @@ struct InstallArgs {
     /// Stdio command for MCP servers (after --)
     #[arg(last = true)]
     command: Vec<String>,
+    /// Output format
+    #[arg(short = 'o', long, default_value = "table")]
+    format: OutputFormat,
 }
 
 fn run_install(args: InstallArgs) -> Result<()> {
@@ -327,19 +338,34 @@ fn run_install(args: InstallArgs) -> Result<()> {
     let cmd = InstallCommand::with_defaults()?;
     let report = cmd.execute(&options)?;
 
-    // Print result
-    if report.changed {
-        println!("✓ Installed {} '{}'", args.kind, report.name);
-    } else {
-        println!("• {} '{}' is already installed", args.kind, report.name);
-    }
+    // Print result based on format
+    match args.format {
+        OutputFormat::Table => {
+            if report.changed {
+                println!("✓ Installed {} '{}'", args.kind, report.name);
+            } else {
+                println!("• {} '{}' is already installed", args.kind, report.name);
+            }
 
-    if report.applied {
-        println!("  Applied to client configurations");
-    }
+            if report.applied {
+                println!("  Applied to client configurations");
+            }
 
-    for warning in &report.warnings {
-        println!("  ⚠ {}", warning);
+            for warning in &report.warnings {
+                println!("  ⚠ {}", warning);
+            }
+        }
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "name": report.name,
+                "kind": args.kind,
+                "changed": report.changed,
+                "applied": report.applied,
+                "warnings": report.warnings,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Quiet => {}
     }
 
     Ok(())
@@ -421,6 +447,7 @@ fn run_registry(args: RegistryArgs) -> Result<()> {
             r#type,
             scope,
             force,
+            format,
         } => {
             let config_scope = parse_registry_scope(&scope)?;
             let registry_type = r#type.as_deref().map(parse_registry_type).transpose()?;
@@ -435,20 +462,39 @@ fn run_registry(args: RegistryArgs) -> Result<()> {
 
             let report = cmd.add(&options)?;
 
-            if report.changed {
-                println!(
-                    "Added registry '{}' ({:?} scope)",
-                    report.name, report.scope
-                );
-            } else {
-                println!("Registry '{}' is already configured", report.name);
-            }
+            match format {
+                OutputFormat::Table => {
+                    if report.changed {
+                        println!(
+                            "Added registry '{}' ({:?} scope)",
+                            report.name, report.scope
+                        );
+                    } else {
+                        println!("Registry '{}' is already configured", report.name);
+                    }
 
-            for warning in &report.warnings {
-                println!("  Warning: {}", warning);
+                    for warning in &report.warnings {
+                        println!("  Warning: {}", warning);
+                    }
+                }
+                OutputFormat::Json => {
+                    let output = serde_json::json!({
+                        "name": report.name,
+                        "scope": format!("{:?}", report.scope),
+                        "changed": report.changed,
+                        "warnings": report.warnings,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                }
+                OutputFormat::Quiet => {}
             }
         }
-        RegistrySubcommand::Remove { name, scope, all } => {
+        RegistrySubcommand::Remove {
+            name,
+            scope,
+            all,
+            format,
+        } => {
             let scope_filter = scope.as_deref().map(parse_registry_scope).transpose()?;
 
             let mut options = RegistryRemoveOptions::new(&name).with_all_scopes(all);
@@ -459,10 +505,23 @@ fn run_registry(args: RegistryArgs) -> Result<()> {
 
             let report = cmd.remove(&options)?;
 
-            println!(
-                "Removed registry '{}' from {:?} scope",
-                report.name, report.scope
-            );
+            match format {
+                OutputFormat::Table => {
+                    println!(
+                        "Removed registry '{}' from {:?} scope",
+                        report.name, report.scope
+                    );
+                }
+                OutputFormat::Json => {
+                    let output = serde_json::json!({
+                        "name": report.name,
+                        "scope": format!("{:?}", report.scope),
+                        "removed": true,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                }
+                OutputFormat::Quiet => {}
+            }
         }
     }
 
@@ -1061,6 +1120,77 @@ mod tests {
     #[test]
     fn registry_remove_with_all_flag_parses() {
         let args = ["sift", "registry", "remove", "official", "--all"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_with_format_json_parses() {
+        let args = ["sift", "install", "mcp", "test-server", "--format", "json"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_with_format_short_option_parses() {
+        let args = ["sift", "install", "mcp", "test-server", "-o", "json"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn uninstall_with_format_json_parses() {
+        let args = [
+            "sift",
+            "uninstall",
+            "mcp",
+            "test-server",
+            "--format",
+            "json",
+        ];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn status_with_format_json_parses() {
+        let args = ["sift", "status", "--format", "json"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn registry_list_with_format_json_parses() {
+        let args = ["sift", "registry", "list", "--format", "json"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn registry_add_with_format_json_parses() {
+        let args = [
+            "sift",
+            "registry",
+            "add",
+            "test-reg",
+            "https://example.com/v1",
+            "--format",
+            "json",
+        ];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn registry_remove_with_format_json_parses() {
+        let args = ["sift", "registry", "remove", "test-reg", "--format", "json"];
 
         let cli = Cli::try_parse_from(args).unwrap();
         assert!(cli.command.is_some());
