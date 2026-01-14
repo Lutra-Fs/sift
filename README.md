@@ -54,7 +54,7 @@ The `sift` binary provides multiple interfaces depending on your needs:
 ### CLI Example
 
 ```bash
-# Install a tool (defaults to Global)
+# Install a tool (defaults to Global, auto-creates config if needed)
 sift install <tool-name>
 
 # Install with a declared version (registry sources only)
@@ -78,9 +78,28 @@ sift install mcp custom --transport http --url https://mcp.example.com
 # Install a tool for the current project (Shared)
 sift install <tool-name> --scope project
 
-# Generate configuration for a specific client
-sift export --target claude-desktop
-sift export --target vscode
+# Sync/Regenerate all client configurations (after git pull or manual edit)
+sift install
+```
+
+### Uninstall Behavior
+
+When uninstalling, scope behavior depends on the `--scope` flag:
+
+**Auto (default)**: Detects scope from lockfile, then searches all configs
+```bash
+sift uninstall mcp my-server      # Auto-detect scope
+```
+
+**--scope all**: Removes from all scopes where installed (respects client capabilities)
+```bash
+sift uninstall skill my-skill --scope all    # Remove everywhere
+```
+
+**Explicit scope**: Errors if package not found in that scope
+```bash
+sift uninstall mcp shared --scope shared     # Specific scope only
+sift rm skill test                          # 'rm' is an alias for 'uninstall'
 ```
 
 ## Roadmap
