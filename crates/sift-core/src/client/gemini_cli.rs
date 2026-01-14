@@ -59,14 +59,16 @@ impl ClientAdapter for GeminiCliClient {
             ConfigScope::Global => Ok(ManagedJsonPlan {
                 root: PathRoot::User,
                 relative_path: ".gemini/settings.json".into(),
-                json_path: vec!["mcpServers".to_string()],
+                config_path: vec!["mcpServers".to_string()],
                 entries,
+                format: McpConfigFormat::Generic,
             }),
             ConfigScope::PerProjectShared => Ok(ManagedJsonPlan {
                 root: PathRoot::Project,
                 relative_path: ".gemini/settings.json".into(),
-                json_path: vec!["mcpServers".to_string()],
+                config_path: vec!["mcpServers".to_string()],
                 entries,
+                format: McpConfigFormat::Generic,
             }),
             ConfigScope::PerProjectLocal => {
                 anyhow::bail!(

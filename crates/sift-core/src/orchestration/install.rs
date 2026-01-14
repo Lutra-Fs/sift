@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use crate::client::{ClientAdapter, ClientContext, PathRoot};
-use crate::config::managed_json::apply_managed_entries_in_path;
+use crate::config::client_config::{self, ConfigFormat};
 use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
 use crate::fs::LinkMode;
 use crate::git::{FetchResult, GitFetcher, ensure_git_exclude};
@@ -125,13 +125,15 @@ impl InstallOrchestrator {
                 let outcome = self.install.install_mcp(req.name, req.entry, req.force)?;
                 let plan = client.plan_mcp(ctx, decision.scope, req.servers)?;
                 let config_path = resolve_plan_path(ctx, plan.root, &plan.relative_path)?;
-                let path: Vec<&str> = plan.json_path.iter().map(|s| s.as_str()).collect();
-                apply_managed_entries_in_path(
+                let path: Vec<&str> = plan.config_path.iter().map(|s| s.as_str()).collect();
+                let format: ConfigFormat = plan.format.into();
+                client_config::apply_managed_entries_in_path(
                     &config_path,
                     &path,
                     &plan.entries,
                     &self.lockfile_service,
                     req.force,
+                    format,
                 )
                 .with_context(|| format!("Failed to apply MCP config for {}", req.name))?;
                 self.update_mcp_lockfile(req.name, &entry, req.declared_version)?;

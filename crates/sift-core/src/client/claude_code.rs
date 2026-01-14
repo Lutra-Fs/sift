@@ -88,26 +88,29 @@ impl ClientAdapter for ClaudeCodeClient {
             ConfigScope::Global => Ok(ManagedJsonPlan {
                 root: PathRoot::User,
                 relative_path: ".claude.json".into(),
-                json_path: vec!["mcpServers".to_string()],
+                config_path: vec!["mcpServers".to_string()],
                 entries,
+                format: McpConfigFormat::ClaudeCode,
             }),
             ConfigScope::PerProjectShared => Ok(ManagedJsonPlan {
                 root: PathRoot::Project,
                 relative_path: ".mcp.json".into(),
-                json_path: vec!["mcpServers".to_string()],
+                config_path: vec!["mcpServers".to_string()],
                 entries,
+                format: McpConfigFormat::ClaudeCode,
             }),
             ConfigScope::PerProjectLocal => {
                 let project_key = ctx.project_root.to_string_lossy().to_string();
                 Ok(ManagedJsonPlan {
                     root: PathRoot::User,
                     relative_path: ".claude.json".into(),
-                    json_path: vec![
+                    config_path: vec![
                         "projects".to_string(),
                         project_key,
                         "mcpServers".to_string(),
                     ],
                     entries,
+                    format: McpConfigFormat::ClaudeCode,
                 })
             }
         }

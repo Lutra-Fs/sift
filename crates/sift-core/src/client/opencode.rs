@@ -64,8 +64,9 @@ impl ClientAdapter for OpenCodeClient {
             ConfigScope::PerProjectShared => Ok(ManagedJsonPlan {
                 root: PathRoot::Project,
                 relative_path: "opencode.json".into(),
-                json_path: vec!["mcp".to_string()],
+                config_path: vec!["mcp".to_string()],
                 entries,
+                format: McpConfigFormat::Generic,
             }),
             ConfigScope::PerProjectLocal => {
                 anyhow::bail!(

@@ -59,14 +59,16 @@ impl ClientAdapter for AmpClient {
             ConfigScope::Global => Ok(ManagedJsonPlan {
                 root: PathRoot::User,
                 relative_path: ".config/amp/settings.json".into(),
-                json_path: vec!["amp.mcpServers".to_string()],
+                config_path: vec!["amp.mcpServers".to_string()],
                 entries,
+                format: McpConfigFormat::Generic,
             }),
             ConfigScope::PerProjectShared => Ok(ManagedJsonPlan {
                 root: PathRoot::Project,
                 relative_path: ".vscode/settings.json".into(),
-                json_path: vec!["amp.mcpServers".to_string()],
+                config_path: vec!["amp.mcpServers".to_string()],
                 entries,
+                format: McpConfigFormat::Generic,
             }),
             ConfigScope::PerProjectLocal => {
                 anyhow::bail!("Amp does not support local (per-project private) MCP configuration")

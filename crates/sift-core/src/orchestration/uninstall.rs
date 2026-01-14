@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::client::{ClientAdapter, ClientContext};
 use crate::config::ConfigStore;
-use crate::config::managed_json::read_json_map_at_path;
+use crate::config::client_config::{self, ConfigFormat};
 use crate::lockfile::LockfileService;
 use crate::orchestration::install::resolve_plan_path;
 use crate::orchestration::service::{UninstallOutcome, UninstallService};
@@ -79,8 +79,8 @@ impl UninstallOrchestrator {
         let scope = self.uninstall.config_store().scope();
         let plan = client.plan_mcp(ctx, scope, &[])?;
         let config_path = resolve_plan_path(ctx, plan.root, &plan.relative_path)?;
-        let path: Vec<&str> = plan.json_path.iter().map(|s| s.as_str()).collect();
-        let ownership_key = plan.json_path.join(".");
+        let path: Vec<&str> = plan.config_path.iter().map(|s| s.as_str()).collect();
+        let ownership_key = plan.config_path.join(".");
         let ownership = self
             .lockfile_service
             .load_ownership(&config_path, Some(&ownership_key))?;
@@ -88,7 +88,8 @@ impl UninstallOrchestrator {
             return Ok(false);
         }
 
-        let existing = read_json_map_at_path(&config_path, &path)?;
+        let format: ConfigFormat = plan.format.into();
+        let existing = client_config::read_map_at_path(&config_path, &path, format)?;
         let has_entry = existing.contains_key(name);
         let is_owned = ownership.contains_key(name);
 
@@ -105,12 +106,13 @@ impl UninstallOrchestrator {
             return Ok(false);
         }
 
-        crate::config::managed_json::apply_managed_entries_in_path(
+        client_config::apply_managed_entries_in_path(
             &config_path,
             &path,
             &desired,
             &self.lockfile_service,
             false,
+            format,
         )
         .with_context(|| format!("Failed to remove MCP '{}' from client config", name))?;
 

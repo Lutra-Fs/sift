@@ -69,8 +69,9 @@ impl ClientAdapter for VsCodeClient {
                 root: PathRoot::Project,
                 relative_path: ".vscode/mcp.json".into(),
                 // VS Code uses "servers" instead of "mcpServers"
-                json_path: vec!["servers".to_string()],
+                config_path: vec!["servers".to_string()],
                 entries,
+                format: McpConfigFormat::Generic,
             }),
             ConfigScope::PerProjectLocal => {
                 anyhow::bail!(

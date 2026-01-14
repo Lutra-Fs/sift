@@ -125,14 +125,16 @@ pub enum SkillDeliveryMode {
 }
 
 /// MCP configuration format
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpConfigFormat {
     /// Claude Desktop format: { "mcpServers": {...} }
     ClaudeDesktop,
     /// Claude Code format: { "mcp": {...} }
     ClaudeCode,
-    /// Generic format
+    /// TOML format (e.g., Codex's config.toml)
+    Toml,
+    /// Generic JSON format
     Generic,
 }
 
@@ -143,12 +145,17 @@ pub enum PathRoot {
 }
 
 #[derive(Debug, Clone)]
-pub struct ManagedJsonPlan {
+pub struct ManagedConfigPlan {
     pub root: PathRoot,
     pub relative_path: PathBuf,
-    pub json_path: Vec<String>,
+    /// Path within the config file to the managed entries (e.g., ["mcp_servers"])
+    pub config_path: Vec<String>,
     pub entries: Map<String, Value>,
+    pub format: McpConfigFormat,
 }
+
+/// Deprecated alias for backward compatibility.
+pub type ManagedJsonPlan = ManagedConfigPlan;
 
 #[derive(Debug, Clone)]
 pub struct SkillDeliveryPlan {

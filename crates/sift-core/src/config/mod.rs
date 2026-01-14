@@ -5,6 +5,7 @@
 //! - PerProjectLocal: Project-specific, not shared
 //! - PerProjectShared: Project-specific, shared across team
 
+pub mod client_config;
 pub mod managed_json;
 pub mod merge;
 pub mod ownership;

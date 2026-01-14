@@ -20,6 +20,7 @@ use crate::client::opencode::OpenCodeClient;
 use crate::client::vscode::VsCodeClient;
 use crate::client::{ClientAdapter, ClientContext, PathRoot};
 use crate::config::SiftConfig;
+use crate::config::client_config::{ConfigFormat, serializer_for_format};
 use crate::config::schema::{McpConfigEntry, SkillConfigEntry};
 use crate::fs::LinkMode;
 use crate::lockfile::{LockedMcpServer, LockedSkill};
@@ -652,25 +653,25 @@ pub fn collect_status_with_paths(
                             resolve_plan_path(&ctx, plan.root, &plan.relative_path);
 
                         // Load ownership for this config file
-                        let json_path: Vec<&str> = if plan.json_path.is_empty() {
+                        let config_path: Vec<&str> = if plan.config_path.is_empty() {
                             vec!["mcpServers"]
                         } else {
-                            plan.json_path.iter().map(|s| s.as_str()).collect()
+                            plan.config_path.iter().map(|s| s.as_str()).collect()
                         };
-                        let field_key = json_path.join(".");
+                        let field_key = config_path.join(".");
                         let ownership = lockfile_service
                             .load_ownership(&config_file_path, Some(&field_key))
                             .unwrap_or_default();
 
                         // Check integrity
                         let integrity = if config_file_path.exists() {
-                            match std::fs::read_to_string(&config_file_path) {
-                                Ok(content) => match serde_json::from_str::<Value>(&content) {
-                                    Ok(json) => {
-                                        verify_mcp_deployment(&json, &json_path, name, &ownership)
-                                    }
-                                    Err(_) => DeploymentIntegrity::NotDeployed,
-                                },
+                            let format: ConfigFormat = plan.format.into();
+                            let serializer = serializer_for_format(format);
+                            match serializer.load(&config_file_path) {
+                                Ok(map) => {
+                                    let json = Value::Object(map);
+                                    verify_mcp_deployment(&json, &config_path, name, &ownership)
+                                }
                                 Err(_) => DeploymentIntegrity::NotDeployed,
                             }
                         } else {
@@ -1003,7 +1004,41 @@ impl StatusCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            // set_var is unsafe because it can race with other threads reading env vars.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe {
+                    std::env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
 
     #[test]
     fn test_aggregated_integrity_all_ok() {
@@ -1097,5 +1132,76 @@ enabled = false
             claude_client_default.enabled,
             "Client should be enabled by default when not configured"
         );
+    }
+
+    #[test]
+    fn test_mcp_status_uses_toml_config_for_codex() {
+        let _home_lock = HOME_LOCK.lock().expect("lock home mutex");
+        let home_dir = tempdir().expect("create home dir");
+        let _home_guard = EnvGuard::set("HOME", home_dir.path());
+
+        let global_dir = tempdir().expect("create global dir");
+        let state_dir = tempdir().expect("create state dir");
+        let project_root = tempdir().expect("create project root");
+
+        let project_config_path = project_root.path().join("sift.toml");
+        std::fs::write(
+            &project_config_path,
+            r#"
+[mcp.test]
+source = "registry:example"
+"#,
+        )
+        .expect("write project config");
+
+        let codex_config_path = home_dir.path().join(".codex").join("config.toml");
+        std::fs::create_dir_all(codex_config_path.parent().unwrap())
+            .expect("create codex config dir");
+        std::fs::write(
+            &codex_config_path,
+            r#"
+[mcp_servers.test]
+command = "echo"
+"#,
+        )
+        .expect("write codex config");
+
+        let mut ownership = HashMap::new();
+        let entry_value = serde_json::json!({
+            "command": "echo",
+        });
+        let expected_hash = crate::config::ownership::hash_json(&entry_value);
+        ownership.insert("test".to_string(), expected_hash);
+
+        let lockfile_service = LockfileService::new(
+            state_dir.path().to_path_buf(),
+            Some(project_root.path().to_path_buf()),
+        );
+        lockfile_service
+            .save_ownership(&codex_config_path, Some("mcp_servers"), &ownership)
+            .expect("save ownership");
+
+        let status = collect_status_with_paths(
+            project_root.path(),
+            global_dir.path(),
+            state_dir.path(),
+            None,
+            true,
+        )
+        .expect("collect status");
+
+        let codex_deployment = status
+            .mcp_servers
+            .iter()
+            .find(|server| server.name == "test")
+            .and_then(|server| {
+                server
+                    .deployments
+                    .iter()
+                    .find(|deployment| deployment.client_id == "codex")
+            })
+            .expect("codex deployment should exist");
+
+        assert_eq!(codex_deployment.integrity, DeploymentIntegrity::Ok);
     }
 }

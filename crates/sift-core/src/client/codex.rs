@@ -1,8 +1,6 @@
 //! Codex client implementation.
 //!
-//! Note: Codex uses TOML format for MCP configuration (~/.codex/config.toml).
-//! TOML support needs to be implemented separately. For now, this adapter
-//! defines the structure but actual TOML writing is not yet implemented.
+//! Codex uses TOML format for MCP configuration (~/.codex/config.toml).
 
 use serde_json::{Map, Value, json};
 
@@ -46,9 +44,7 @@ impl ClientAdapter for CodexClient {
                 global_path: "~/.codex/skills".to_string(),
                 project_path: Some(".codex/skills".to_string()),
             },
-            // Note: Codex actually uses TOML, but we use Generic here as a placeholder
-            // TODO: Add McpConfigFormat::Toml variant when TOML support is implemented
-            mcp_config_format: McpConfigFormat::Generic,
+            mcp_config_format: McpConfigFormat::Toml,
             supported_transports: ["stdio", "http"]
                 .into_iter()
                 .map(|s| s.to_string())
@@ -65,13 +61,12 @@ impl ClientAdapter for CodexClient {
         match scope {
             ConfigScope::Global => {
                 let entries = build_mcp_entries(servers)?;
-                // Note: This produces JSON structure that would need to be converted to TOML
-                // The actual file is ~/.codex/config.toml with [mcp_servers.<name>] sections
                 Ok(ManagedJsonPlan {
                     root: PathRoot::User,
                     relative_path: ".codex/config.toml".into(),
-                    json_path: vec!["mcp_servers".to_string()],
+                    config_path: vec!["mcp_servers".to_string()],
                     entries,
+                    format: McpConfigFormat::Toml,
                 })
             }
             ConfigScope::PerProjectShared | ConfigScope::PerProjectLocal => {
