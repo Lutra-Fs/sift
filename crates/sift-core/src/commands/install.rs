@@ -13,6 +13,7 @@ use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry, merge_configs
 use crate::fs::LinkMode;
 use crate::lockfile::LockfileService;
 use crate::mcp::spec::McpResolvedServer;
+use crate::mcpb::{derive_name_from_mcpb_url, is_mcpb_url, normalize_mcpb_source};
 use crate::orchestration::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
 };
@@ -439,7 +440,8 @@ impl InstallCommand {
         let ctx = ClientContext::new(self.home_dir.clone(), self.project_root.clone());
 
         // Build resolved server spec (simplified for now)
-        let servers = self.build_mcp_servers(&name, &source, &entry, version.as_deref())?;
+        let servers =
+            self.build_mcp_servers(&name, &source, &entry, version.as_deref(), options.force)?;
 
         // Determine scope request
         let scope_request = match options.scope {
@@ -754,9 +756,10 @@ impl InstallCommand {
     fn build_mcp_servers(
         &self,
         name: &str,
-        _source: &str,
+        source: &str,
         entry: &McpConfigEntry,
         version: Option<&str>,
+        force: bool,
     ) -> anyhow::Result<Vec<McpResolvedServer>> {
         if entry.transport.as_deref() == Some("http") {
             let url = entry
@@ -768,6 +771,22 @@ impl InstallCommand {
                 url,
                 entry.headers.clone(),
             )]);
+        }
+
+        // Handle MCPB bundle sources
+        if let Some(mcpb_url) = source.strip_prefix("mcpb:") {
+            return self.build_mcp_servers_from_mcpb(name, mcpb_url, entry, force);
+        }
+
+        // Handle registry sources - resolve from marketplace
+        if let Some(registry_part) = source.strip_prefix("registry:") {
+            return self.build_mcp_servers_from_registry(
+                name,
+                registry_part,
+                entry,
+                version,
+                force,
+            );
         }
 
         if entry.runtime.as_deref() == Some("shell") {
@@ -784,15 +803,173 @@ impl InstallCommand {
             )]);
         }
 
-        // Build a resolved server spec from the entry.
-        // NOTE: Registry resolution is not implemented yet; we pass name@version as args.
+        // Fallback: Build a resolved server spec using npm-style name@version
         let runtime = entry.runtime.as_deref().unwrap_or(DEFAULT_RUNTIME);
         let command = runtime.to_string();
 
-        // For registry sources, args should be derived from registry metadata.
-        // TODO: Resolve from configured registries instead of relying on runtime tools.
         let resolved = version.unwrap_or(DEFAULT_VERSION);
         let mut args = vec![format!("{}@{}", name, resolved)];
+        args.extend(entry.args.clone());
+
+        Ok(vec![McpResolvedServer::stdio(
+            name.to_string(),
+            command,
+            args,
+            entry.env.clone(),
+        )])
+    }
+
+    fn command_from_registry_source(source: &str) -> Option<String> {
+        let colon_count = source.chars().filter(|c| *c == ':').count();
+        if colon_count < 2 {
+            return None;
+        }
+        let (_base, command) = source.rsplit_once(':')?;
+        if command.is_empty() {
+            return None;
+        }
+        Some(command.to_string())
+    }
+
+    /// Build MCP server specs from an MCPB bundle.
+    ///
+    /// Downloads the bundle, extracts it, parses manifest.json, and converts
+    /// to McpResolvedServer with platform-specific overrides applied.
+    fn build_mcp_servers_from_mcpb(
+        &self,
+        name: &str,
+        url: &str,
+        entry: &McpConfigEntry,
+        force: bool,
+    ) -> anyhow::Result<Vec<McpResolvedServer>> {
+        use crate::mcpb::{McpbFetcher, manifest_to_server};
+
+        let fetcher = McpbFetcher::new(self.state_dir.join("cache"));
+
+        // Block on async fetch using tokio runtime
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create tokio runtime: {}", e))?;
+
+        let bundle = runtime.block_on(fetcher.fetch(url, force))?;
+
+        // Convert manifest to resolved server
+        let mut server = manifest_to_server(name, &bundle.manifest, &bundle.extract_dir)?;
+
+        // Merge any user-provided environment variables from the entry
+        for (key, value) in &entry.env {
+            server.env.insert(key.clone(), value.clone());
+        }
+
+        // Append any additional args from the entry
+        server.args.extend(entry.args.clone());
+
+        Ok(vec![server])
+    }
+
+    /// Build MCP server specs from a registry source.
+    ///
+    /// Resolves the plugin from the marketplace registry, extracts mcpServers,
+    /// and handles MCPB bundles or other transport types.
+    ///
+    /// If registry resolution fails (no registries configured, plugin not found,
+    /// or plugin has no mcpServers), falls back to npm-style name@version resolution.
+    fn build_mcp_servers_from_registry(
+        &self,
+        name: &str,
+        registry_part: &str,
+        entry: &McpConfigEntry,
+        version: Option<&str>,
+        force: bool,
+    ) -> anyhow::Result<Vec<McpResolvedServer>> {
+        let source_resolver = self.create_source_resolver()?;
+
+        // Try to resolve the MCP config from the registry
+        // If this fails or returns None, fall back to npm-style resolution
+        let resolutions = match source_resolver.resolve_mcp_registry(registry_part) {
+            Ok(Some(resolutions)) if !resolutions.is_empty() => resolutions,
+            Ok(Some(_)) | Ok(None) => {
+                // Plugin found but has no mcpServers - fall back to npm-style
+                return self.build_mcp_servers_npm_fallback(name, version, entry);
+            }
+            Err(_) => {
+                // Registry resolution failed (no registries, plugin not found, etc.)
+                // Fall back to npm-style resolution
+                return self.build_mcp_servers_npm_fallback(name, version, entry);
+            }
+        };
+
+        // For now, handle single-server plugins
+        // Multi-server plugins would need special handling in the CLI
+        if resolutions.is_empty() {
+            anyhow::bail!("Plugin '{}' has no MCP servers defined", name);
+        }
+
+        let mut servers = Vec::new();
+        for resolution in resolutions {
+            let mcp_source = &resolution.mcp_config.source;
+
+            // If the resolved source is an MCPB bundle, delegate to MCPB handler
+            if let Some(mcpb_url) = mcp_source.strip_prefix("mcpb:") {
+                let mcpb_servers = self.build_mcp_servers_from_mcpb(
+                    &resolution.plugin_name,
+                    mcpb_url,
+                    entry,
+                    force,
+                )?;
+                servers.extend(mcpb_servers);
+            } else if resolution.mcp_config.url.is_some() {
+                // HTTP transport
+                let url = resolution.mcp_config.url.clone().unwrap_or_default();
+                let mut headers = resolution.mcp_config.headers.clone();
+                headers.extend(entry.headers.clone());
+                servers.push(McpResolvedServer::http(
+                    resolution.plugin_name.clone(),
+                    url,
+                    headers,
+                ));
+            } else {
+                // STDIO transport with command
+                let command = Self::command_from_registry_source(&resolution.mcp_config.source)
+                    .unwrap_or_else(|| {
+                        entry
+                            .runtime
+                            .as_deref()
+                            .unwrap_or(DEFAULT_RUNTIME)
+                            .to_string()
+                    });
+
+                let mut args = resolution.mcp_config.args.clone();
+                args.extend(entry.args.clone());
+
+                let mut env = resolution.mcp_config.env.clone();
+                env.extend(entry.env.clone());
+
+                servers.push(McpResolvedServer::stdio(
+                    resolution.plugin_name.clone(),
+                    command,
+                    args,
+                    env,
+                ));
+            }
+        }
+
+        Ok(servers)
+    }
+
+    /// Fallback: Build MCP server specs using npm-style name@version resolution.
+    ///
+    /// Used when registry resolution fails or is not available.
+    fn build_mcp_servers_npm_fallback(
+        &self,
+        name: &str,
+        version: Option<&str>,
+        entry: &McpConfigEntry,
+    ) -> anyhow::Result<Vec<McpResolvedServer>> {
+        let runtime = entry.runtime.as_deref().unwrap_or(DEFAULT_RUNTIME);
+        let command = runtime.to_string();
+
+        let resolved_version = version.unwrap_or(DEFAULT_VERSION);
+        let mut args = vec![format!("{}@{}", name, resolved_version)];
         args.extend(entry.args.clone());
 
         Ok(vec![McpResolvedServer::stdio(
@@ -830,6 +1007,11 @@ impl InstallCommand {
         }
 
         if let Some(inferred) = self.infer_local_source(input) {
+            return Ok(inferred);
+        }
+
+        // Check for MCPB URL before git (MCPB takes priority for .mcpb URLs)
+        if let Some(inferred) = self.infer_mcpb_source(input) {
             return Ok(inferred);
         }
 
@@ -881,17 +1063,46 @@ impl InstallCommand {
         })
     }
 
+    fn infer_mcpb_source(&self, input: &str) -> Option<ResolvedNameAndSource> {
+        if !is_mcpb_url(input) {
+            return None;
+        }
+        let source = normalize_mcpb_source(input)?;
+        let name = derive_name_from_mcpb_url(input).ok()?;
+        Some(ResolvedNameAndSource {
+            name,
+            source,
+            source_is_registry: false,
+            source_explicit: false,
+            warnings: Vec::new(),
+        })
+    }
+
     fn normalize_explicit_source(&self, source: &str) -> anyhow::Result<(String, Option<String>)> {
         if source.starts_with("registry:")
             || source.starts_with("local:")
             || source.starts_with("github:")
             || source.starts_with("git:")
+            || source.starts_with("mcpb:")
         {
             return Ok((source.to_string(), None));
         }
 
         if is_local_path(source, &self.project_root) {
             let normalized = format!("local:{}", source);
+            return Ok((
+                normalized.clone(),
+                Some(format!(
+                    "Normalized source '{}' to '{}'.",
+                    source, normalized
+                )),
+            ));
+        }
+
+        // Check for MCPB URL before git (MCPB takes priority for .mcpb URLs)
+        if is_mcpb_url(source)
+            && let Some(normalized) = normalize_mcpb_source(source)
+        {
             return Ok((
                 normalized.clone(),
                 Some(format!(
@@ -913,7 +1124,7 @@ impl InstallCommand {
         }
 
         anyhow::bail!(
-            "Invalid source format: must be 'registry:', 'local:', 'github:', 'git:', a path, or a git URL"
+            "Invalid source format: must be 'registry:', 'local:', 'github:', 'git:', 'mcpb:', a path, or a git URL"
         )
     }
 

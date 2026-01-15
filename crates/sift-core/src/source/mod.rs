@@ -9,7 +9,7 @@
 mod resolver;
 mod spec;
 
-pub use resolver::{RegistryMetadata, RegistryResolution, SourceResolver};
+pub use resolver::{McpRegistryResolution, RegistryMetadata, RegistryResolution, SourceResolver};
 pub use spec::{LocalSpec, ResolvedSource};
 
 // Re-export GitSpec from git module for convenience

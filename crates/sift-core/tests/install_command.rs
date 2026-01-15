@@ -480,6 +480,157 @@ fn install_mcp_registry_with_env_and_headers() {
 }
 
 #[test]
+fn install_mcp_registry_preserves_stdio_command_from_plugin() {
+    let (temp, cmd) = setup_isolated_install_command();
+
+    let mcp_servers_json = r#"{"registry-mcp":{"command":"python","args":["-m","acme.server"]}}"#;
+    let marketplace_url =
+        create_marketplace_repo_for_mcp(temp.path(), "registry-mcp", mcp_servers_json);
+
+    let global_config_path = temp.path().join("config").join("sift.toml");
+    let global_config = format!(
+        r#"
+[registry.test-marketplace]
+type = "claude-marketplace"
+source = "git:{}"
+"#,
+        marketplace_url.trim_end_matches('/')
+    );
+    std::fs::write(&global_config_path, global_config).expect("Failed to write global config");
+
+    let opts = InstallOptions::mcp("registry-mcp")
+        .with_source("registry:test-marketplace/registry-mcp")
+        .with_scope(ConfigScope::PerProjectShared);
+
+    let report = cmd.execute(&opts).expect("Install should succeed");
+    assert!(report.changed);
+
+    let mcp_json_path = temp.path().join("project").join(".mcp.json");
+    let content = std::fs::read_to_string(&mcp_json_path).expect("Should read .mcp.json");
+    let json: serde_json::Value = serde_json::from_str(&content).expect("Should parse .mcp.json");
+    let command = json
+        .get("mcpServers")
+        .and_then(|v| v.get("registry-mcp"))
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str());
+    assert_eq!(command, Some("python"));
+}
+
+#[test]
+fn install_mcp_registry_http_headers_user_override() {
+    let (temp, cmd) = setup_isolated_install_command();
+
+    let mcp_servers_json = r#"{"http-mcp":{"url":"https://api.example.com/mcp","headers":{"Authorization":"registry","X-Registry":"1"}}}"#;
+    let marketplace_url =
+        create_marketplace_repo_for_mcp(temp.path(), "http-mcp", mcp_servers_json);
+
+    let global_config_path = temp.path().join("config").join("sift.toml");
+    let global_config = format!(
+        r#"
+[registry.test-marketplace]
+type = "claude-marketplace"
+source = "git:{}"
+"#,
+        marketplace_url.trim_end_matches('/')
+    );
+    std::fs::write(&global_config_path, global_config).expect("Failed to write global config");
+
+    let opts = InstallOptions::mcp("http-mcp")
+        .with_source("registry:test-marketplace/http-mcp")
+        .with_header("Authorization=user")
+        .with_header("Accept=text/plain")
+        .with_scope(ConfigScope::PerProjectShared);
+
+    let report = cmd.execute(&opts).expect("Install should succeed");
+    assert!(report.changed);
+
+    let mcp_json_path = temp.path().join("project").join(".mcp.json");
+    let content = std::fs::read_to_string(&mcp_json_path).expect("Should read .mcp.json");
+    let json: serde_json::Value = serde_json::from_str(&content).expect("Should parse .mcp.json");
+    let headers = json
+        .get("mcpServers")
+        .and_then(|v| v.get("http-mcp"))
+        .and_then(|v| v.get("headers"))
+        .and_then(|v| v.as_object())
+        .expect("Expected headers object");
+
+    assert_eq!(
+        headers.get("Authorization").and_then(|v| v.as_str()),
+        Some("user")
+    );
+    assert_eq!(
+        headers.get("Accept").and_then(|v| v.as_str()),
+        Some("text/plain")
+    );
+    assert_eq!(
+        headers.get("X-Registry").and_then(|v| v.as_str()),
+        Some("1")
+    );
+}
+
+#[test]
+fn install_mcp_registry_mcpb_uses_cached_bundle() {
+    let (temp, cmd) = setup_isolated_install_command();
+
+    let mcpb_url = "https://example.com/server.mcpb";
+    let manifest_json = r#"{
+        "manifest_version": "0.3",
+        "name": "server",
+        "version": "1.0.0",
+        "description": "Test MCPB",
+        "author": { "name": "Test" },
+        "server": {
+            "type": "node",
+            "entry_point": "dist/index.js"
+        }
+    }"#;
+    write_mcpb_cache(&temp.path().join("state"), mcpb_url, manifest_json);
+
+    let mcp_servers_json = r#"{"primary":"https://example.com/server.mcpb"}"#;
+    let marketplace_url =
+        create_marketplace_repo_for_mcp(temp.path(), "10x-genomics", mcp_servers_json);
+
+    let global_config_path = temp.path().join("config").join("sift.toml");
+    let global_config = format!(
+        r#"
+[registry.test-marketplace]
+type = "claude-marketplace"
+source = "git:{}"
+"#,
+        marketplace_url.trim_end_matches('/')
+    );
+    std::fs::write(&global_config_path, global_config).expect("Failed to write global config");
+
+    let opts = InstallOptions::mcp("10x-genomics")
+        .with_source("registry:test-marketplace/10x-genomics")
+        .with_scope(ConfigScope::PerProjectShared);
+
+    let report = cmd.execute(&opts).expect("Install should succeed");
+    assert!(report.changed);
+
+    let mcp_json_path = temp.path().join("project").join(".mcp.json");
+    let content = std::fs::read_to_string(&mcp_json_path).expect("Should read .mcp.json");
+    let json: serde_json::Value = serde_json::from_str(&content).expect("Should parse .mcp.json");
+    let server = json
+        .get("mcpServers")
+        .and_then(|v| v.get("primary"))
+        .expect("Expected primary server");
+    let command = server.get("command").and_then(|v| v.as_str());
+    let args = server
+        .get("args")
+        .and_then(|v| v.as_array())
+        .expect("Expected args array");
+
+    assert_eq!(command, Some("node"));
+    assert!(
+        args.first()
+            .and_then(|v| v.as_str())
+            .is_some_and(|value| value.ends_with("dist/index.js")),
+        "Expected args to include extracted entry point"
+    );
+}
+
+#[test]
 fn install_mcp_registry_without_version_support_ignores_version() {
     let (temp, cmd) = setup_isolated_install_command();
     let global_config_path = temp.path().join("config").join("sift.toml");
@@ -924,6 +1075,58 @@ fn create_marketplace_repo(temp: &std::path::Path, plugins: &[(&str, &str)]) -> 
     Url::from_directory_path(&repo_root)
         .expect("repo root should convert to file URL")
         .to_string()
+}
+
+fn create_marketplace_repo_for_mcp(
+    temp: &std::path::Path,
+    plugin_name: &str,
+    mcp_servers_json: &str,
+) -> String {
+    let repo_root = temp.join(format!("marketplace-{}", plugin_name));
+    std::fs::create_dir_all(&repo_root).expect("Failed to create repo dir");
+    run_git(&repo_root, &["init"]);
+    run_git(&repo_root, &["checkout", "-b", "main"]);
+    run_git(&repo_root, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_root, &["config", "user.name", "Test User"]);
+    run_git(&repo_root, &["config", "commit.gpgsign", "false"]);
+
+    let plugin_dir = repo_root.join("plugins").join(plugin_name);
+    std::fs::create_dir_all(&plugin_dir).expect("Failed to create plugin dir");
+    std::fs::write(plugin_dir.join("README.md"), "test plugin").expect("Failed to write README.md");
+
+    let marketplace_json = format!(
+        r#"{{
+            "marketplace": {{"name": "test-marketplace"}},
+            "plugins": [{{
+                "name": "{plugin_name}",
+                "description": "Test MCP plugin",
+                "version": "1.0.0",
+                "source": "./plugins/{plugin_name}",
+                "mcpServers": {mcp_servers_json}
+            }}]
+        }}"#,
+        plugin_name = plugin_name,
+        mcp_servers_json = mcp_servers_json
+    );
+    let marketplace_dir = repo_root.join(".claude-plugin");
+    std::fs::create_dir_all(&marketplace_dir).expect("Failed to create marketplace dir");
+    std::fs::write(marketplace_dir.join("marketplace.json"), marketplace_json)
+        .expect("Failed to write marketplace.json");
+
+    run_git(&repo_root, &["add", "."]);
+    run_git(&repo_root, &["commit", "-m", "init"]);
+
+    Url::from_directory_path(&repo_root)
+        .expect("repo root should convert to file URL")
+        .to_string()
+}
+
+fn write_mcpb_cache(state_dir: &std::path::Path, url: &str, manifest_json: &str) {
+    let hash = blake3::hash(url.as_bytes()).to_hex()[..32].to_string();
+    let extract_dir = state_dir.join("cache").join("mcpb").join(hash);
+    std::fs::create_dir_all(&extract_dir).expect("Failed to create MCPB cache dir");
+    std::fs::write(extract_dir.join("manifest.json"), manifest_json)
+        .expect("Failed to write MCPB manifest.json");
 }
 
 fn create_marketplace_repo_with_group(

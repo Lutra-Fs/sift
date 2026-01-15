@@ -11,6 +11,15 @@ pub enum ResolvedSource {
     Git(GitSpec),
     /// Local filesystem source
     Local(LocalSpec),
+    /// MCPB bundle source (remote zip archive)
+    Mcpb(McpbSpec),
+}
+
+/// Specification for an MCPB bundle source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpbSpec {
+    /// URL to download the .mcpb bundle from
+    pub url: String,
 }
 
 impl ResolvedSource {
@@ -22,6 +31,11 @@ impl ResolvedSource {
     /// Check if this is a local source.
     pub fn is_local(&self) -> bool {
         matches!(self, Self::Local(_))
+    }
+
+    /// Check if this is an MCPB bundle source.
+    pub fn is_mcpb(&self) -> bool {
+        matches!(self, Self::Mcpb(_))
     }
 
     /// Get the git spec if this is a git source.
@@ -38,6 +52,21 @@ impl ResolvedSource {
             Self::Local(spec) => Some(spec),
             _ => None,
         }
+    }
+
+    /// Get the MCPB spec if this is an MCPB source.
+    pub fn as_mcpb(&self) -> Option<&McpbSpec> {
+        match self {
+            Self::Mcpb(spec) => Some(spec),
+            _ => None,
+        }
+    }
+}
+
+impl McpbSpec {
+    /// Create a new McpbSpec from a URL.
+    pub fn new(url: impl Into<String>) -> Self {
+        Self { url: url.into() }
     }
 }
 

@@ -10,7 +10,7 @@ use crate::git::{GitFetcher, GitSpec};
 use crate::registry::marketplace::MarketplaceAdapter;
 use crate::registry::{RegistryConfig, RegistryType};
 
-use super::spec::{LocalSpec, ResolvedSource};
+use super::spec::{LocalSpec, McpbSpec, ResolvedSource};
 
 /// Metadata about a registry resolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +44,22 @@ pub struct RegistryResolution {
     pub metadata: RegistryMetadata,
 }
 
+/// Result of resolving an MCP server from a registry.
+///
+/// Used when marketplace plugins define `mcpServers` with MCPB bundle URLs
+/// or STDIO/HTTP configurations.
+#[derive(Debug, Clone)]
+pub struct McpRegistryResolution {
+    /// The resolved MCP configuration
+    pub mcp_config: crate::mcp::McpConfig,
+    /// Registry key (e.g., "anthropic-skills")
+    pub registry_key: String,
+    /// Plugin name from marketplace
+    pub plugin_name: String,
+    /// Plugin version from marketplace
+    pub plugin_version: String,
+}
+
 /// Resolves source strings into fetchable specifications.
 #[derive(Debug)]
 pub struct SourceResolver {
@@ -75,9 +91,14 @@ impl SourceResolver {
     /// - `local:./path` or `local:/absolute/path` -> LocalSpec
     /// - `git:url` or `github:org/repo` -> GitSpec
     /// - `registry:name/skill` -> GitSpec (via marketplace resolution)
+    /// - `mcpb:url` -> McpbSpec (MCPB bundle)
     pub fn resolve(&self, source: &str) -> anyhow::Result<ResolvedSource> {
         if let Some(path) = source.strip_prefix("local:") {
             return self.resolve_local(path);
+        }
+
+        if let Some(url) = source.strip_prefix("mcpb:") {
+            return self.resolve_mcpb(url);
         }
 
         if source.starts_with("git:") || source.starts_with("github:") {
@@ -103,6 +124,10 @@ impl SourceResolver {
     ) -> anyhow::Result<(ResolvedSource, Option<RegistryMetadata>)> {
         if let Some(path) = source.strip_prefix("local:") {
             return Ok((self.resolve_local(path)?, None));
+        }
+
+        if let Some(url) = source.strip_prefix("mcpb:") {
+            return Ok((self.resolve_mcpb(url)?, None));
         }
 
         if source.starts_with("git:") || source.starts_with("github:") {
@@ -142,6 +167,11 @@ impl SourceResolver {
     fn resolve_git(&self, source: &str) -> anyhow::Result<ResolvedSource> {
         let spec = GitSpec::parse(source)?;
         Ok(ResolvedSource::Git(spec))
+    }
+
+    /// Resolve an MCPB bundle source string.
+    fn resolve_mcpb(&self, url: &str) -> anyhow::Result<ResolvedSource> {
+        Ok(ResolvedSource::Mcpb(McpbSpec::new(url)))
     }
 
     /// Resolve a registry source by fetching and parsing marketplace.json.
@@ -682,6 +712,98 @@ impl SourceResolver {
         let mut all_resolutions = vec![parent_resolution];
         all_resolutions.extend(nested_resolutions);
         Ok(all_resolutions)
+    }
+
+    /// Resolve MCP server configurations from a marketplace plugin.
+    ///
+    /// This method extracts MCP server definitions from the `mcpServers` field
+    /// of a marketplace plugin and converts them to `McpRegistryResolution`.
+    ///
+    /// Supports:
+    /// - MCPB bundle URLs (e.g., `"https://example.com/server.mcpb"`)
+    /// - HTTP URLs for remote MCP servers
+    /// - STDIO command configurations
+    /// - Named server objects with multiple servers
+    ///
+    /// Returns an empty vec if the plugin has no `mcpServers` field.
+    pub fn resolve_mcp_from_plugin(
+        &self,
+        plugin: &crate::registry::marketplace::MarketplacePlugin,
+        registry_key: &str,
+    ) -> anyhow::Result<Vec<McpRegistryResolution>> {
+        let configs = MarketplaceAdapter::plugin_to_mcp_configs(plugin, None)?;
+
+        if configs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut resolutions = Vec::new();
+        for (name, mcp_config) in configs {
+            resolutions.push(McpRegistryResolution {
+                mcp_config,
+                registry_key: registry_key.to_string(),
+                plugin_name: name,
+                plugin_version: plugin.version.clone(),
+            });
+        }
+
+        Ok(resolutions)
+    }
+
+    /// Resolve an MCP server from a registry source string.
+    ///
+    /// Handles `registry:name` or `registry:key/name` format.
+    /// Fetches marketplace.json, finds the plugin, and extracts mcpServers.
+    ///
+    /// Returns `None` if the plugin exists but has no mcpServers defined
+    /// (it's a skill-only plugin).
+    pub fn resolve_mcp_registry(
+        &self,
+        registry_part: &str,
+    ) -> anyhow::Result<Option<Vec<McpRegistryResolution>>> {
+        let (registry_key, plugin_name) = self.parse_registry_source(registry_part)?;
+
+        let config = self
+            .registries
+            .get(&registry_key)
+            .ok_or_else(|| anyhow::anyhow!("Unknown registry: {}", registry_key))?;
+
+        match config.r#type {
+            RegistryType::ClaudeMarketplace => {
+                let marketplace_source = config
+                    .source
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("Marketplace registry missing source field"))?;
+
+                let marketplace_spec = GitSpec::parse(marketplace_source)?;
+
+                let fetcher = GitFetcher::new(self.state_dir.clone());
+                let manifest_content = fetcher
+                    .read_root_file(&marketplace_spec, ".claude-plugin/marketplace.json")
+                    .with_context(|| {
+                        format!(
+                            "Failed to read .claude-plugin/marketplace.json from {}",
+                            marketplace_source
+                        )
+                    })?;
+
+                let manifest = MarketplaceAdapter::parse(&manifest_content)?;
+                let plugin =
+                    MarketplaceAdapter::find_plugin(&manifest, plugin_name).ok_or_else(|| {
+                        anyhow::anyhow!("Plugin not found in registry: {}", plugin_name)
+                    })?;
+
+                let resolutions = self.resolve_mcp_from_plugin(plugin, &registry_key)?;
+                if resolutions.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(resolutions))
+                }
+            }
+            RegistryType::Sift => {
+                anyhow::bail!("Sift registry MCP resolution not yet implemented")
+            }
+        }
     }
 
     /// Detect name collisions across plugin aliases.

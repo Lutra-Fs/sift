@@ -422,24 +422,72 @@ impl MarketplaceAdapter {
 
     /// Convert a marketplace plugin with MCP servers to Sift MCP configs
     /// Supports both STDIO (command-based) and HTTP (URL-based) transports
+    /// Also supports MCPB bundles when mcpServers is a string URL ending in .mcpb
     pub fn plugin_to_mcp_configs(
         plugin: &MarketplacePlugin,
         _marketplace_source: Option<&str>,
     ) -> anyhow::Result<Vec<(String, crate::mcp::McpConfig)>> {
         let mut configs = Vec::new();
 
-        if let Some(mcp_servers) = &plugin.mcp_servers
-            && let Some(obj) = mcp_servers.as_object()
-        {
-            for (name, server_config) in obj {
-                configs.push((
-                    name.clone(),
-                    Self::parse_mcp_server_config(name, server_config, plugin)?,
-                ));
+        if let Some(mcp_servers) = &plugin.mcp_servers {
+            // Case 1: mcpServers is a string URL (typically an MCPB bundle URL)
+            if let Some(url_str) = mcp_servers.as_str() {
+                let config = Self::parse_mcp_server_url_string(&plugin.name, url_str, plugin)?;
+                configs.push((plugin.name.clone(), config));
+            }
+            // Case 2: mcpServers is an object with named server configs
+            else if let Some(obj) = mcp_servers.as_object() {
+                for (name, server_config) in obj {
+                    configs.push((
+                        name.clone(),
+                        Self::parse_mcp_server_config(name, server_config, plugin)?,
+                    ));
+                }
             }
         }
 
         Ok(configs)
+    }
+
+    /// Parse a URL string as an MCP server config
+    /// If URL ends with .mcpb, returns MCPB source; otherwise HTTP transport
+    fn parse_mcp_server_url_string(
+        _name: &str,
+        url_str: &str,
+        plugin: &MarketplacePlugin,
+    ) -> anyhow::Result<crate::mcp::McpConfig> {
+        // Check if this is an MCPB bundle URL
+        if crate::mcpb::is_mcpb_url(url_str) {
+            // For MCPB bundles, store as mcpb: source
+            // The actual download/extraction happens during install orchestration
+            let source = crate::mcpb::normalize_mcpb_source(url_str)
+                .unwrap_or_else(|| format!("mcpb:{}", url_str));
+
+            return Ok(crate::mcp::McpConfig {
+                transport: crate::mcp::TransportType::Stdio, // MCPB servers run locally
+                source,
+                runtime: crate::mcp::RuntimeType::Node, // Will be determined from MCPB manifest
+                args: vec![],
+                url: None,
+                headers: std::collections::HashMap::new(),
+                targets: None,
+                ignore_targets: None,
+                env: std::collections::HashMap::new(),
+            });
+        }
+
+        // Regular HTTP URL
+        Ok(crate::mcp::McpConfig {
+            transport: crate::mcp::TransportType::Http,
+            source: plugin.name.clone(),
+            runtime: crate::mcp::RuntimeType::Node,
+            args: vec![],
+            url: Some(url_str.to_string()),
+            headers: std::collections::HashMap::new(),
+            targets: None,
+            ignore_targets: None,
+            env: std::collections::HashMap::new(),
+        })
     }
 
     /// Parse a single MCP server configuration
@@ -448,19 +496,9 @@ impl MarketplaceAdapter {
         server_config: &serde_json::Value,
         plugin: &MarketplacePlugin,
     ) -> anyhow::Result<crate::mcp::McpConfig> {
-        // Case 1: URL string → HTTP transport
+        // Case 1: URL string → HTTP transport or MCPB bundle
         if let Some(url_str) = server_config.as_str() {
-            return Ok(crate::mcp::McpConfig {
-                transport: crate::mcp::TransportType::Http,
-                source: plugin.name.clone(),
-                runtime: crate::mcp::RuntimeType::Node, // Not used for HTTP
-                args: vec![],
-                url: Some(url_str.to_string()),
-                headers: Self::parse_headers_field(server_config),
-                targets: None,
-                ignore_targets: None,
-                env: Self::parse_env_field(server_config),
-            });
+            return Self::parse_mcp_server_url_string(name, url_str, plugin);
         }
 
         // Case 2: Object with url field → HTTP transport
@@ -1305,5 +1343,61 @@ mod tests {
             Some(&"postgresql://localhost/mydb".to_string())
         );
         assert_eq!(config.env.get("DEBUG"), Some(&"true".to_string()));
+    }
+
+    /// Test that mcpServers as a string URL (MCPB bundle) is properly parsed
+    #[test]
+    fn test_mcp_servers_string_url_mcpb() {
+        let json = r#"{
+  "name": "10x-genomics",
+  "version": "1.0.0",
+  "description": "10x Genomics Cloud MCP server for accessing analysis data and workflows",
+  "source": "./10x-genomics",
+  "author": {
+    "name": "10x Genomics, Inc.",
+    "url": "https://www.10xgenomics.com"
+  },
+  "mcpServers": "https://github.com/10XGenomics/txg-mcp/releases/latest/download/txg-node.mcpb"
+}"#;
+
+        // Parse as a single plugin (this mimics plugin.json format)
+        let plugin: MarketplacePlugin = serde_json::from_str(json).unwrap();
+        assert_eq!(plugin.name, "10x-genomics");
+
+        // Test MCP server conversion - should detect MCPB URL
+        let mcp_configs = MarketplaceAdapter::plugin_to_mcp_configs(&plugin, None).unwrap();
+        assert_eq!(mcp_configs.len(), 1);
+
+        let (name, config) = &mcp_configs[0];
+        assert_eq!(name, "10x-genomics");
+        assert_eq!(config.transport, crate::mcp::TransportType::Stdio);
+        assert!(
+            config.source.starts_with("mcpb:"),
+            "MCPB URL should be normalized to mcpb: prefix. Got: {}",
+            config.source
+        );
+        assert!(config.source.contains("txg-node.mcpb"));
+    }
+
+    /// Test that mcpServers as a regular HTTP URL is treated as HTTP transport
+    #[test]
+    fn test_mcp_servers_string_url_http() {
+        let json = r#"{
+  "name": "my-remote-mcp",
+  "version": "1.0.0",
+  "description": "Remote MCP server",
+  "source": "./my-remote-mcp",
+  "mcpServers": "https://api.example.com/mcp"
+}"#;
+
+        let plugin: MarketplacePlugin = serde_json::from_str(json).unwrap();
+
+        let mcp_configs = MarketplaceAdapter::plugin_to_mcp_configs(&plugin, None).unwrap();
+        assert_eq!(mcp_configs.len(), 1);
+
+        let (name, config) = &mcp_configs[0];
+        assert_eq!(name, "my-remote-mcp");
+        assert_eq!(config.transport, crate::mcp::TransportType::Http);
+        assert_eq!(config.url, Some("https://api.example.com/mcp".to_string()));
     }
 }

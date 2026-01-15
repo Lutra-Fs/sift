@@ -306,6 +306,13 @@ impl InstallOrchestrator {
                     origin: None,
                 })
             }
+            ResolvedSource::Mcpb(_) => {
+                // MCPB bundles are only supported for MCP servers, not skills
+                anyhow::bail!(
+                    "MCPB bundles are only supported for MCP servers, not skills. \
+                     Use a git or local source for skills."
+                )
+            }
         }
     }
 

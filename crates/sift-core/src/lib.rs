@@ -10,6 +10,7 @@ pub mod fs;
 pub mod git;
 pub mod lockfile;
 pub mod mcp;
+pub mod mcpb;
 pub mod orchestration;
 pub mod registry;
 pub mod runtime;
