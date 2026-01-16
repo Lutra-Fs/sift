@@ -190,4 +190,26 @@ mod tests {
         let url = "https://example.com/.mcpb";
         assert!(derive_name_from_mcpb_url(url).is_err());
     }
+
+    #[test]
+    fn test_derive_name_from_mcpb_url_no_path_segment() {
+        // Edge case: URL with no real path after domain
+        // rsplit('/').next() on "https:" after stripping prefix yields "https:"
+        // which doesn't end in .mcpb, so should error with "missing .mcpb extension"
+        let url = "https:";
+        let result = derive_name_from_mcpb_url(url);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing .mcpb extension"));
+    }
+
+    #[test]
+    fn test_derive_name_from_mcpb_url_bare_domain() {
+        // URL with just domain, no path
+        let url = "https://example.com";
+        let result = derive_name_from_mcpb_url(url);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing .mcpb extension"));
+    }
 }

@@ -109,7 +109,7 @@ impl McpbFetcher {
     }
 
     /// Extract a zip archive to a directory
-    fn extract(&self, data: &[u8], dest: &Path) -> anyhow::Result<()> {
+    pub(crate) fn extract(&self, data: &[u8], dest: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(dest)
             .with_context(|| format!("Failed to create extract directory: {}", dest.display()))?;
 
@@ -167,7 +167,7 @@ impl McpbFetcher {
     }
 
     /// Read and parse manifest.json from the extracted bundle
-    fn read_manifest(&self, path: &Path) -> anyhow::Result<McpbManifest> {
+    pub(crate) fn read_manifest(&self, path: &Path) -> anyhow::Result<McpbManifest> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read manifest: {}", path.display()))?;
 
@@ -176,7 +176,7 @@ impl McpbFetcher {
     }
 
     /// Generate a hash for cache key from URL
-    fn hash_url(&self, url: &str) -> String {
+    pub(crate) fn hash_url(&self, url: &str) -> String {
         let hash = blake3::hash(url.as_bytes());
         // Use first 16 bytes (32 hex chars) for brevity
         hash.to_hex()[..32].to_string()
@@ -378,5 +378,121 @@ mod tests {
         let fetcher = McpbFetcher::new(cache_path.clone());
 
         assert_eq!(fetcher.cache_dir(), &cache_path);
+    }
+
+    // =========================================================================
+    // Error Path Tests
+    // =========================================================================
+
+    #[test]
+    fn extract_truncated_zip_errors() {
+        let fetcher = McpbFetcher::new(PathBuf::from("/tmp/cache"));
+        let temp = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let extract_dir = temp.path().join("extracted");
+
+        let valid_zip = create_test_mcpb_zip(minimal_manifest_json());
+        let truncated = &valid_zip[..valid_zip.len() / 2];
+
+        let result = fetcher.extract(truncated, &extract_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_empty_data_errors() {
+        let fetcher = McpbFetcher::new(PathBuf::from("/tmp/cache"));
+        let temp = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let extract_dir = temp.path().join("extracted");
+
+        let result = fetcher.extract(b"", &extract_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_manifest_missing_required_fields_errors() {
+        let fetcher = McpbFetcher::new(PathBuf::from("/tmp/cache"));
+        let temp = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let manifest_path = temp.path().join("manifest.json");
+
+        let incomplete = r#"{"name": "test"}"#;
+        std::fs::write(&manifest_path, incomplete).expect("Should write file");
+
+        let result = fetcher.read_manifest(&manifest_path);
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Security Tests
+    // =========================================================================
+
+    #[test]
+    fn extract_path_traversal_blocked() {
+        let fetcher = McpbFetcher::new(PathBuf::from("/tmp/cache"));
+        let temp = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let extract_dir = temp.path().join("extracted");
+
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default();
+
+            // Path traversal attempt - zip library's enclosed_name() should block this
+            zip.start_file("../../../tmp/traversal-test.txt", options)
+                .expect("Failed to start file");
+            zip.write_all(b"malicious content")
+                .expect("Failed to write");
+            zip.finish().expect("Failed to finish");
+        }
+        let zip_data = buf.into_inner();
+
+        let result = fetcher.extract(&zip_data, &extract_dir);
+        // Should succeed (with entry skipped) or fail safely
+        assert!(result.is_ok());
+
+        // Verify file wasn't written outside extract_dir
+        let traversal_file = std::path::PathBuf::from("/tmp/traversal-test.txt");
+        assert!(!traversal_file.exists(), "Path traversal should be blocked");
+    }
+
+    // =========================================================================
+    // Network Tests (require tokio runtime and network access)
+    //
+    // These tests are ignored by default because they require external network
+    // access which may not be available in CI/sandbox environments.
+    // Run with: cargo test -p sift-core -- --ignored
+    // =========================================================================
+
+    #[tokio::test]
+    #[ignore = "requires external network access"]
+    async fn fetch_404_errors() {
+        let temp = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let fetcher = McpbFetcher::new(temp.path().to_path_buf());
+
+        let result = fetcher.fetch("https://httpbin.org/status/404", false).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("404") || err.contains("download"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access (localhost port check)"]
+    async fn fetch_connection_refused() {
+        let temp = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let fetcher = McpbFetcher::new(temp.path().to_path_buf());
+
+        // Port unlikely to have a server
+        let result = fetcher
+            .fetch("http://localhost:59999/bundle.mcpb", false)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network layer initialization"]
+    async fn fetch_invalid_url_format() {
+        let temp = tempfile::TempDir::new().expect("Failed to create temp dir");
+        let fetcher = McpbFetcher::new(temp.path().to_path_buf());
+
+        let result = fetcher.fetch("not-a-valid-url", false).await;
+        assert!(result.is_err());
     }
 }

@@ -337,3 +337,109 @@ mod resolve_with_metadata_tests {
         assert!(metadata.is_none());
     }
 }
+
+mod resolver_error_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_registry_unknown_registry_errors() {
+        let resolver = create_test_resolver();
+        let result = resolver.resolve("registry:nonexistent/skill");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("No registries") || err.contains("Unknown"),
+            "Error should indicate registry issue: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_registry_with_key_unknown_registry_errors() {
+        let resolver = create_resolver_with_registry("known-registry", "github:anthropics/skills");
+
+        let result = resolver.resolve("registry:unknown-registry/skill");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Unknown registry") || err.contains("unknown-registry"),
+            "Error should mention unknown registry: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_mcp_registry_no_registries_returns_none_or_error() {
+        let resolver = create_test_resolver();
+        let result = resolver.resolve_mcp_registry("some-plugin");
+
+        // With no registries, should error
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("No registries") || err.contains("registry"));
+    }
+
+    #[test]
+    fn resolve_sift_registry_not_implemented() {
+        let mut registries = HashMap::new();
+        registries.insert(
+            "sift-reg".to_string(),
+            RegistryConfig {
+                r#type: RegistryType::Sift,
+                url: Some(
+                    url::Url::parse("https://sift-registry.example.com")
+                        .expect("valid URL for test"),
+                ),
+                source: None,
+            },
+        );
+        let resolver = SourceResolver::new(
+            PathBuf::from("/tmp/state"),
+            PathBuf::from("/tmp/project"),
+            registries,
+        );
+
+        let result = resolver.resolve("registry:sift-reg/some-skill");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not yet implemented") || err.contains("Sift"),
+            "Error should indicate Sift registry not implemented: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_mcp_registry_sift_type_not_implemented() {
+        let mut registries = HashMap::new();
+        registries.insert(
+            "sift-reg".to_string(),
+            RegistryConfig {
+                r#type: RegistryType::Sift,
+                url: Some(
+                    url::Url::parse("https://sift-registry.example.com")
+                        .expect("valid URL for test"),
+                ),
+                source: None,
+            },
+        );
+        let resolver = SourceResolver::new(
+            PathBuf::from("/tmp/state"),
+            PathBuf::from("/tmp/project"),
+            registries,
+        );
+
+        let result = resolver.resolve_mcp_registry("sift-reg/some-plugin");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not yet implemented") || err.contains("Sift"),
+            "Error should indicate Sift registry not implemented: {}",
+            err
+        );
+    }
+}

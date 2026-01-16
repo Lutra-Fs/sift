@@ -56,4 +56,9 @@ pub mod prelude {
     // Version
     pub use crate::lockfile::{LockedMcpServer, LockedSkill, Lockfile};
     pub use crate::version::{VersionConstraint, VersionResolver};
+
+    // Runtime
+    pub use crate::runtime::{
+        McpbRuntimeRequest, PythonExecutor, PythonRuntimeRequest, RunnerSpec, ShellRuntimeRequest,
+    };
 }
