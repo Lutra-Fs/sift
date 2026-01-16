@@ -8,6 +8,7 @@ use std::path::Path;
 
 use crate::mcp::spec::McpResolvedServer;
 
+use super::security::validate_entry_point;
 use super::{McpbManifest, McpbMcpConfig, McpbServerType};
 
 /// Convert an MCPB manifest into an McpResolvedServer.
@@ -27,6 +28,7 @@ pub fn manifest_to_server(
     let mcp_config = match &server.mcp_config {
         Some(config) => config.clone(),
         None => derive_mcp_config(
+            name,
             server.server_type,
             server.entry_point.as_deref(),
             extract_dir,
@@ -68,6 +70,7 @@ pub fn manifest_to_server(
 
 /// Derive mcp_config from server type and entry point when not explicitly provided.
 fn derive_mcp_config(
+    name: &str,
     server_type: McpbServerType,
     entry_point: Option<&str>,
     extract_dir: &Path,
@@ -79,26 +82,15 @@ fn derive_mcp_config(
         )
     })?;
 
+    // Validate entry_point to prevent path traversal attacks
+    let validated_path = validate_entry_point(entry, extract_dir, name)?;
+    let path_str = validated_path.display().to_string();
+
     let (command, args) = match server_type {
-        McpbServerType::Node => {
-            let full_path = extract_dir.join(entry);
-            ("node".to_string(), vec![full_path.display().to_string()])
-        }
-        McpbServerType::Python => {
-            let full_path = extract_dir.join(entry);
-            ("python".to_string(), vec![full_path.display().to_string()])
-        }
-        McpbServerType::Uv => {
-            let full_path = extract_dir.join(entry);
-            (
-                "uv".to_string(),
-                vec!["run".to_string(), full_path.display().to_string()],
-            )
-        }
-        McpbServerType::Binary => {
-            let full_path = extract_dir.join(entry);
-            (full_path.display().to_string(), Vec::new())
-        }
+        McpbServerType::Node => ("node".to_string(), vec![path_str]),
+        McpbServerType::Python => ("python".to_string(), vec![path_str]),
+        McpbServerType::Uv => ("uv".to_string(), vec!["run".to_string(), path_str]),
+        McpbServerType::Binary => (path_str, Vec::new()),
     };
 
     Ok(McpbMcpConfig {
@@ -404,6 +396,88 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("entry_point") || err.contains("mcp_config"));
+    }
+
+    // =========================================================================
+    // Path Traversal Security Tests
+    // =========================================================================
+
+    #[test]
+    fn convert_rejects_absolute_entry_point() {
+        let manifest = parse_manifest(
+            r#"{
+            "manifest_version": "0.3",
+            "name": "malicious-absolute",
+            "version": "1.0.0",
+            "description": "Absolute path attack",
+            "author": { "name": "Test" },
+            "server": {
+                "type": "node",
+                "entry_point": "/bin/sh"
+            }
+        }"#,
+        );
+
+        let extract_dir = PathBuf::from("/cache/bundles/abc123");
+        let result = manifest_to_server("malicious-absolute", &manifest, &extract_dir);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("absolute") || err.contains("outside"),
+            "Error should mention path issue: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn convert_rejects_path_traversal_entry_point() {
+        let manifest = parse_manifest(
+            r#"{
+            "manifest_version": "0.3",
+            "name": "malicious-traversal",
+            "version": "1.0.0",
+            "description": "Path traversal attack",
+            "author": { "name": "Test" },
+            "server": {
+                "type": "python",
+                "entry_point": "../../../usr/bin/python"
+            }
+        }"#,
+        );
+
+        let extract_dir = PathBuf::from("/cache/bundles/abc123");
+        let result = manifest_to_server("malicious-traversal", &manifest, &extract_dir);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("outside") || err.contains("traversal"),
+            "Error should mention path escape: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn convert_rejects_hidden_traversal_entry_point() {
+        let manifest = parse_manifest(
+            r#"{
+            "manifest_version": "0.3",
+            "name": "hidden-traversal",
+            "version": "1.0.0",
+            "description": "Hidden path traversal",
+            "author": { "name": "Test" },
+            "server": {
+                "type": "binary",
+                "entry_point": "dist/../../../etc/passwd"
+            }
+        }"#,
+        );
+
+        let extract_dir = PathBuf::from("/cache/bundles/abc123");
+        let result = manifest_to_server("hidden-traversal", &manifest, &extract_dir);
+
+        assert!(result.is_err());
     }
 
     // =========================================================================

@@ -109,7 +109,7 @@ impl McpbFetcher {
     }
 
     /// Extract a zip archive to a directory
-    pub(crate) fn extract(&self, data: &[u8], dest: &Path) -> anyhow::Result<()> {
+    pub fn extract(&self, data: &[u8], dest: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(dest)
             .with_context(|| format!("Failed to create extract directory: {}", dest.display()))?;
 
@@ -167,7 +167,7 @@ impl McpbFetcher {
     }
 
     /// Read and parse manifest.json from the extracted bundle
-    pub(crate) fn read_manifest(&self, path: &Path) -> anyhow::Result<McpbManifest> {
+    pub fn read_manifest(&self, path: &Path) -> anyhow::Result<McpbManifest> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read manifest: {}", path.display()))?;
 
@@ -176,7 +176,7 @@ impl McpbFetcher {
     }
 
     /// Generate a hash for cache key from URL
-    pub(crate) fn hash_url(&self, url: &str) -> String {
+    pub fn hash_url(&self, url: &str) -> String {
         let hash = blake3::hash(url.as_bytes());
         // Use first 16 bytes (32 hex chars) for brevity
         hash.to_hex()[..32].to_string()

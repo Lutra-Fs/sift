@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::mcpb::security::validate_entry_point;
 use crate::mcpb::{McpbManifest, McpbMcpConfig, McpbServerType};
 
 use super::{
@@ -173,81 +174,6 @@ fn current_platform() -> &'static str {
 /// Substitute ${__dirname} placeholder with actual directory path
 fn substitute_dirname(value: &str, dirname: &str) -> String {
     value.replace("${__dirname}", dirname)
-}
-
-/// Validate that entry_point is a relative path that stays inside extract_dir.
-///
-/// Returns the validated full path on success.
-///
-/// # Security
-///
-/// This prevents path traversal attacks where a malicious manifest specifies
-/// entry_point as an absolute path (e.g., "/bin/sh") or a path with traversal
-/// components (e.g., "../../../usr/bin/python").
-fn validate_entry_point(
-    entry_point: &str,
-    extract_dir: &Path,
-    manifest_name: &str,
-) -> anyhow::Result<std::path::PathBuf> {
-    let entry_path = Path::new(entry_point);
-
-    // Reject absolute paths immediately
-    if entry_path.is_absolute() {
-        anyhow::bail!(
-            "MCPB manifest '{}' has invalid entry_point: absolute paths are not allowed (got '{}')",
-            manifest_name,
-            entry_point
-        );
-    }
-
-    // Join and normalize the path to resolve ".." components
-    let full_path = extract_dir.join(entry_point);
-
-    // Use lexical normalization to resolve ".." without requiring filesystem access.
-    // This handles cases like "dist/../../../etc/passwd" -> escapes extract_dir.
-    let normalized = normalize_path(&full_path);
-    let normalized_extract = normalize_path(extract_dir);
-
-    // Verify the normalized path starts with the extract directory
-    if !normalized.starts_with(&normalized_extract) {
-        anyhow::bail!(
-            "MCPB manifest '{}' has invalid entry_point: path traversal detected \
-            (entry_point '{}' resolves outside bundle directory)",
-            manifest_name,
-            entry_point
-        );
-    }
-
-    Ok(normalized)
-}
-
-/// Lexically normalize a path by resolving `.` and `..` components without filesystem access.
-///
-/// Unlike `canonicalize()`, this doesn't require the path to exist and doesn't follow symlinks.
-fn normalize_path(path: &Path) -> std::path::PathBuf {
-    use std::path::Component;
-
-    let mut components = Vec::new();
-
-    for component in path.components() {
-        match component {
-            Component::ParentDir => {
-                // Pop the last component if possible (but don't go above root)
-                if !components.is_empty() && !matches!(components.last(), Some(Component::RootDir))
-                {
-                    components.pop();
-                }
-            }
-            Component::CurDir => {
-                // Skip "." components
-            }
-            c => {
-                components.push(c);
-            }
-        }
-    }
-
-    components.iter().collect()
 }
 
 #[cfg(test)]

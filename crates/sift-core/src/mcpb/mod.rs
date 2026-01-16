@@ -6,6 +6,7 @@
 pub mod bundle;
 pub mod converter;
 pub mod manifest;
+pub mod security;
 
 pub use bundle::{McpbBundle, McpbFetcher};
 pub use converter::manifest_to_server;
