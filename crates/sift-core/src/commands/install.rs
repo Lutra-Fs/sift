@@ -8,25 +8,17 @@ use std::path::{Path, PathBuf};
 
 use crate::client::ClientAdapter;
 use crate::client::ClientContext;
-use crate::client::claude_code::ClaudeCodeClient;
-use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry, merge_configs};
+use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
 use crate::fs::LinkMode;
-use crate::lockfile::LockfileService;
-use crate::mcp::spec::McpResolvedServer;
-use crate::mcpb::{derive_name_from_mcpb_url, is_mcpb_url, normalize_mcpb_source};
+use crate::mcp::McpServerBuilder;
 use crate::orchestration::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
 };
 use crate::orchestration::{InstallMcpRequest, InstallOrchestrator};
-use crate::skills::installer::SkillInstaller;
-use crate::source::SourceResolver;
+use crate::source::{ResolvedInput, SourceResolver};
 use crate::types::ConfigScope;
 
-/// Default runtime for MCP servers when not specified
-const DEFAULT_RUNTIME: &str = "npx";
-
-/// Default version constraint when not specified
-const DEFAULT_VERSION: &str = "latest";
+use super::context::InstallContext;
 
 /// What to install: MCP server or skill
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,18 +212,9 @@ pub struct InstallReport {
 }
 
 /// Install command orchestrator
-#[derive(Debug)]
 pub struct InstallCommand {
-    /// Home directory
-    home_dir: PathBuf,
-    /// Project root directory
-    project_root: PathBuf,
-    /// State directory for lockfiles
-    state_dir: PathBuf,
-    /// Global config directory
-    global_config_dir: PathBuf,
-    /// Link mode for skills
-    link_mode: LinkMode,
+    /// Shared context for dependency injection
+    ctx: InstallContext,
 }
 
 impl InstallCommand {
@@ -242,7 +225,6 @@ impl InstallCommand {
         state_dir: PathBuf,
         link_mode: LinkMode,
     ) -> Self {
-        // Derive global_config_dir from system defaults when not explicitly provided
         let global_config_dir = dirs::config_dir()
             .map(|p| p.join("sift"))
             .unwrap_or_else(|| home_dir.join(".config").join("sift"));
@@ -264,71 +246,50 @@ impl InstallCommand {
         link_mode: LinkMode,
     ) -> Self {
         Self {
-            home_dir,
-            project_root,
-            state_dir,
-            global_config_dir,
-            link_mode,
+            ctx: InstallContext::new(
+                home_dir,
+                project_root,
+                state_dir,
+                global_config_dir,
+                link_mode,
+            ),
         }
     }
 
     /// Create an install command with default paths
     pub fn with_defaults() -> anyhow::Result<Self> {
-        let home_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-        let project_root = std::env::current_dir()?;
-        let state_dir = dirs::state_dir()
-            .or_else(dirs::data_local_dir)
-            .ok_or_else(|| anyhow::anyhow!("Could not determine state directory"))?
-            .join("sift");
-        let global_store = ConfigStore::from_scope(ConfigScope::Global)?;
-        let project_store = ConfigStore::from_scope(ConfigScope::PerProjectShared)?;
-        let global = global_store.load()?;
-        let project = project_store.load()?;
-        let merged = merge_configs(Some(global), Some(project), &project_root)?;
-        let link_mode = merged.link_mode.unwrap_or(LinkMode::Auto);
-        let global_config_dir = global_store
-            .config_path()
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
-            .to_path_buf();
-
-        Self::with_defaults_from_paths(home_dir, project_root, state_dir, global_config_dir).map(
-            |mut cmd| {
-                cmd.link_mode = link_mode;
-                cmd
-            },
-        )
+        Ok(Self {
+            ctx: InstallContext::with_defaults()?,
+        })
     }
 
+    /// Create an install command from explicit paths, loading link_mode from config.
     pub fn with_defaults_from_paths(
         home_dir: PathBuf,
         project_root: PathBuf,
         state_dir: PathBuf,
         global_config_dir: PathBuf,
     ) -> anyhow::Result<Self> {
-        let global_store = ConfigStore::from_paths(
-            ConfigScope::Global,
-            global_config_dir.clone(),
-            project_root.clone(),
-        );
-        let project_store = ConfigStore::from_paths(
-            ConfigScope::PerProjectShared,
-            global_config_dir.clone(),
-            project_root.clone(),
-        );
-        let global = global_store.load()?;
-        let project = project_store.load()?;
-        let merged = merge_configs(Some(global), Some(project), &project_root)?;
-        let link_mode = merged.link_mode.unwrap_or(LinkMode::Auto);
+        Ok(Self {
+            ctx: InstallContext::from_paths(home_dir, project_root, state_dir, global_config_dir)?,
+        })
+    }
 
-        Ok(Self::with_global_config_dir(
-            home_dir,
-            project_root,
-            state_dir,
-            global_config_dir,
-            link_mode,
-        ))
+    // --- Accessors for backward compatibility ---
+
+    /// Get the home directory path.
+    pub fn home_dir(&self) -> &Path {
+        self.ctx.home_dir()
+    }
+
+    /// Get the project root path.
+    pub fn project_root(&self) -> &Path {
+        self.ctx.project_root()
+    }
+
+    /// Get the link mode.
+    pub fn link_mode(&self) -> LinkMode {
+        self.ctx.link_mode()
     }
 
     /// Execute the install command
@@ -396,7 +357,7 @@ impl InstallCommand {
                 options.source.as_deref(),
                 options.registry.as_deref(),
             )?;
-            let ResolvedNameAndSource {
+            let ResolvedInput {
                 name: resolved_name,
                 source: resolved_source,
                 source_is_registry,
@@ -436,12 +397,20 @@ impl InstallCommand {
         };
 
         // Create client adapter and context
-        let client = ClaudeCodeClient::new();
-        let ctx = ClientContext::new(self.home_dir.clone(), self.project_root.clone());
+        let registry = self.ctx.client_registry();
+        let client = registry
+            .get("claude-code")
+            .ok_or_else(|| anyhow::anyhow!("claude-code client not found in registry"))?;
+        let client_ctx = self.ctx.client_context();
 
         // Build resolved server spec (simplified for now)
-        let servers =
-            self.build_mcp_servers(&name, &source, &entry, version.as_deref(), options.force)?;
+        let servers = self.create_mcp_builder()?.build(
+            &name,
+            &source,
+            &entry,
+            version.as_deref(),
+            options.force,
+        )?;
 
         // Determine scope request
         let scope_request = match options.scope {
@@ -449,7 +418,7 @@ impl InstallCommand {
             None => ScopeRequest::Auto,
         };
 
-        let repo = RepoStatus::from_project_root(&ctx.project_root);
+        let repo = RepoStatus::from_project_root(&client_ctx.project_root);
         let resolution = resolve_scope(
             ResourceKind::Mcp,
             scope_request,
@@ -463,7 +432,7 @@ impl InstallCommand {
         };
 
         // Create orchestrator
-        let config_store = self.create_config_store(config_scope)?;
+        let config_store = self.create_config_store(config_scope);
         let lockfile_service = self.create_lockfile_service();
         let skill_installer = self.create_skill_installer();
         let source_resolver = self.create_source_resolver()?;
@@ -474,13 +443,13 @@ impl InstallCommand {
             skill_installer,
             source_resolver,
             git_fetcher,
-            self.link_mode,
+            self.ctx.link_mode(),
         );
 
         // Execute installation
         let report = orchestrator.install_mcp(
-            &client,
-            &ctx,
+            client,
+            &client_ctx,
             InstallMcpRequest {
                 name: &name,
                 entry,
@@ -511,7 +480,7 @@ impl InstallCommand {
             options.source.as_deref(),
             options.registry.as_deref(),
         )?;
-        let ResolvedNameAndSource {
+        let ResolvedInput {
             name,
             source,
             source_is_registry,
@@ -523,8 +492,11 @@ impl InstallCommand {
         warnings.extend(self.registry_warnings(source_is_registry, source_explicit)?);
 
         // Create client adapter and context
-        let client = ClaudeCodeClient::new();
-        let ctx = ClientContext::new(self.home_dir.clone(), self.project_root.clone());
+        let registry = self.ctx.client_registry();
+        let client = registry
+            .get("claude-code")
+            .ok_or_else(|| anyhow::anyhow!("claude-code client not found in registry"))?;
+        let client_ctx = self.ctx.client_context();
 
         // Check if this is a registry source that might have nested marketplaces
         if let Some(registry_part) = source.strip_prefix("registry:") {
@@ -567,8 +539,8 @@ impl InstallCommand {
                     };
 
                     match self.install_skill_with_orchestrator(
-                        &client,
-                        &ctx,
+                        client,
+                        &client_ctx,
                         &nested_name,
                         nested_entry,
                         &resolution.metadata.original_source,
@@ -615,8 +587,8 @@ impl InstallCommand {
         };
 
         let report = self.install_skill_with_orchestrator(
-            &client,
-            &ctx,
+            client,
+            &client_ctx,
             &name,
             entry,
             &source,
@@ -638,7 +610,7 @@ impl InstallCommand {
     #[allow(clippy::too_many_arguments)]
     fn install_skill_with_orchestrator(
         &self,
-        client: &ClaudeCodeClient,
+        client: &dyn ClientAdapter,
         ctx: &ClientContext,
         name: &str,
         entry: SkillConfigEntry,
@@ -666,7 +638,7 @@ impl InstallCommand {
         };
 
         // Create orchestrator with all active dependencies
-        let config_store = self.create_config_store(config_scope)?;
+        let config_store = self.create_config_store(config_scope);
         let lockfile_service = self.create_lockfile_service();
         let skill_installer = self.create_skill_installer();
         let source_resolver = self.create_source_resolver()?;
@@ -677,7 +649,7 @@ impl InstallCommand {
             skill_installer,
             source_resolver,
             git_fetcher,
-            self.link_mode,
+            self.ctx.link_mode(),
         );
 
         // Use the new active installation method
@@ -695,437 +667,48 @@ impl InstallCommand {
         })
     }
 
-    // Helper methods
+    // Helper methods - delegate to InstallContext
 
-    fn create_config_store(&self, scope: ConfigScope) -> anyhow::Result<ConfigStore> {
-        Ok(ConfigStore::from_paths(
-            scope,
-            self.global_config_dir.clone(),
-            self.project_root.clone(),
-        ))
+    fn create_config_store(&self, scope: ConfigScope) -> ConfigStore {
+        self.ctx.config_store(scope)
     }
 
-    fn create_lockfile_service(&self) -> LockfileService {
-        LockfileService::new(
-            self.state_dir.join("locks"),
-            Some(self.project_root.clone()),
-        )
+    fn create_lockfile_service(&self) -> crate::lockfile::LockfileService {
+        self.ctx.lockfile_service()
     }
 
-    fn create_skill_installer(&self) -> SkillInstaller {
-        SkillInstaller::new(
-            self.state_dir.join("locks"),
-            Some(self.project_root.clone()),
-        )
+    fn create_skill_installer(&self) -> crate::skills::installer::SkillInstaller {
+        self.ctx.skill_installer()
     }
 
     fn create_git_fetcher(&self) -> crate::git::GitFetcher {
-        crate::git::GitFetcher::new(self.state_dir.clone())
+        self.ctx.git_fetcher()
     }
 
     fn create_source_resolver(&self) -> anyhow::Result<SourceResolver> {
-        // Load registry configurations from global and project configs
-        let global_store = ConfigStore::from_paths(
-            ConfigScope::Global,
-            self.global_config_dir.clone(),
-            self.project_root.clone(),
-        );
-        let project_store = ConfigStore::from_paths(
-            ConfigScope::PerProjectShared,
-            self.global_config_dir.clone(),
-            self.project_root.clone(),
-        );
-        let global = global_store.load()?;
-        let project = project_store.load()?;
-        let merged = merge_configs(Some(global), Some(project), &self.project_root)?;
-
-        // Convert registry entries to RegistryConfig
-        let mut registries = std::collections::HashMap::new();
-        for (key, entry) in merged.registry {
-            let config: crate::registry::RegistryConfig = entry.try_into()?;
-            registries.insert(key, config);
-        }
-
-        Ok(SourceResolver::new(
-            self.state_dir.clone(),
-            self.project_root.clone(),
-            registries,
-        ))
+        self.ctx.source_resolver()
     }
 
-    fn build_mcp_servers(
-        &self,
-        name: &str,
-        source: &str,
-        entry: &McpConfigEntry,
-        version: Option<&str>,
-        force: bool,
-    ) -> anyhow::Result<Vec<McpResolvedServer>> {
-        if entry.transport.as_deref() == Some("http") {
-            let url = entry
-                .url
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("HTTP transport requires a URL"))?;
-            return Ok(vec![McpResolvedServer::http(
-                name.to_string(),
-                url,
-                entry.headers.clone(),
-            )]);
+    /// Create an MCP server builder with optional source resolver.
+    fn create_mcp_builder(&self) -> anyhow::Result<McpServerBuilder<'_>> {
+        let builder = McpServerBuilder::new(self.ctx.state_dir());
+        match self.create_source_resolver() {
+            Ok(resolver) => Ok(builder.with_source_resolver(resolver)),
+            Err(_) => Ok(builder),
         }
-
-        // Handle MCPB bundle sources
-        if let Some(mcpb_url) = source.strip_prefix("mcpb:") {
-            return self.build_mcp_servers_from_mcpb(name, mcpb_url, entry, force);
-        }
-
-        // Handle registry sources - resolve from marketplace
-        if let Some(registry_part) = source.strip_prefix("registry:") {
-            return self.build_mcp_servers_from_registry(
-                name,
-                registry_part,
-                entry,
-                version,
-                force,
-            );
-        }
-
-        if entry.runtime.as_deref() == Some("shell") {
-            let command = entry
-                .source
-                .strip_prefix("local:")
-                .unwrap_or(&entry.source)
-                .to_string();
-            return Ok(vec![McpResolvedServer::stdio(
-                name.to_string(),
-                command,
-                entry.args.clone(),
-                entry.env.clone(),
-            )]);
-        }
-
-        // Fallback: Build a resolved server spec using npm-style name@version
-        let runtime = entry.runtime.as_deref().unwrap_or(DEFAULT_RUNTIME);
-        let command = runtime.to_string();
-
-        let resolved = version.unwrap_or(DEFAULT_VERSION);
-        let mut args = vec![format!("{}@{}", name, resolved)];
-        args.extend(entry.args.clone());
-
-        Ok(vec![McpResolvedServer::stdio(
-            name.to_string(),
-            command,
-            args,
-            entry.env.clone(),
-        )])
     }
 
-    fn command_from_registry_source(source: &str) -> Option<String> {
-        let colon_count = source.chars().filter(|c| *c == ':').count();
-        if colon_count < 2 {
-            return None;
-        }
-        let (_base, command) = source.rsplit_once(':')?;
-        if command.is_empty() {
-            return None;
-        }
-        Some(command.to_string())
-    }
-
-    /// Build MCP server specs from an MCPB bundle.
+    /// Resolve user input to a name and source using the SourceResolver.
     ///
-    /// Downloads the bundle, extracts it, parses manifest.json, and converts
-    /// to McpResolvedServer with platform-specific overrides applied.
-    fn build_mcp_servers_from_mcpb(
-        &self,
-        name: &str,
-        url: &str,
-        entry: &McpConfigEntry,
-        force: bool,
-    ) -> anyhow::Result<Vec<McpResolvedServer>> {
-        use crate::mcpb::{McpbFetcher, manifest_to_server};
-
-        let fetcher = McpbFetcher::new(self.state_dir.join("cache"));
-
-        // Block on async fetch using tokio runtime
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| anyhow::anyhow!("Failed to create tokio runtime: {}", e))?;
-
-        let bundle = runtime.block_on(fetcher.fetch(url, force))?;
-
-        // Convert manifest to resolved server
-        let mut server = manifest_to_server(name, &bundle.manifest, &bundle.extract_dir)?;
-
-        // Merge any user-provided environment variables from the entry
-        for (key, value) in &entry.env {
-            server.env.insert(key.clone(), value.clone());
-        }
-
-        // Append any additional args from the entry
-        server.args.extend(entry.args.clone());
-
-        Ok(vec![server])
-    }
-
-    /// Build MCP server specs from a registry source.
-    ///
-    /// Resolves the plugin from the marketplace registry, extracts mcpServers,
-    /// and handles MCPB bundles or other transport types.
-    ///
-    /// If registry resolution fails (no registries configured, plugin not found,
-    /// or plugin has no mcpServers), falls back to npm-style name@version resolution.
-    fn build_mcp_servers_from_registry(
-        &self,
-        name: &str,
-        registry_part: &str,
-        entry: &McpConfigEntry,
-        version: Option<&str>,
-        force: bool,
-    ) -> anyhow::Result<Vec<McpResolvedServer>> {
-        let source_resolver = self.create_source_resolver()?;
-
-        // Try to resolve the MCP config from the registry
-        // If this fails or returns None, fall back to npm-style resolution
-        let resolutions = match source_resolver.resolve_mcp_registry(registry_part) {
-            Ok(Some(resolutions)) if !resolutions.is_empty() => resolutions,
-            Ok(Some(_)) | Ok(None) => {
-                // Plugin found but has no mcpServers - fall back to npm-style
-                return self.build_mcp_servers_npm_fallback(name, version, entry);
-            }
-            Err(_) => {
-                // Registry resolution failed (no registries, plugin not found, etc.)
-                // Fall back to npm-style resolution
-                return self.build_mcp_servers_npm_fallback(name, version, entry);
-            }
-        };
-
-        // For now, handle single-server plugins
-        // Multi-server plugins would need special handling in the CLI
-        if resolutions.is_empty() {
-            anyhow::bail!("Plugin '{}' has no MCP servers defined", name);
-        }
-
-        let mut servers = Vec::new();
-        for resolution in resolutions {
-            let mcp_source = &resolution.mcp_config.source;
-
-            // If the resolved source is an MCPB bundle, delegate to MCPB handler
-            if let Some(mcpb_url) = mcp_source.strip_prefix("mcpb:") {
-                let mcpb_servers = self.build_mcp_servers_from_mcpb(
-                    &resolution.plugin_name,
-                    mcpb_url,
-                    entry,
-                    force,
-                )?;
-                servers.extend(mcpb_servers);
-            } else if resolution.mcp_config.url.is_some() {
-                // HTTP transport
-                let url = resolution.mcp_config.url.clone().unwrap_or_default();
-                let mut headers = resolution.mcp_config.headers.clone();
-                headers.extend(entry.headers.clone());
-                servers.push(McpResolvedServer::http(
-                    resolution.plugin_name.clone(),
-                    url,
-                    headers,
-                ));
-            } else {
-                // STDIO transport with command
-                let command = Self::command_from_registry_source(&resolution.mcp_config.source)
-                    .unwrap_or_else(|| {
-                        entry
-                            .runtime
-                            .as_deref()
-                            .unwrap_or(DEFAULT_RUNTIME)
-                            .to_string()
-                    });
-
-                let mut args = resolution.mcp_config.args.clone();
-                args.extend(entry.args.clone());
-
-                let mut env = resolution.mcp_config.env.clone();
-                env.extend(entry.env.clone());
-
-                servers.push(McpResolvedServer::stdio(
-                    resolution.plugin_name.clone(),
-                    command,
-                    args,
-                    env,
-                ));
-            }
-        }
-
-        Ok(servers)
-    }
-
-    /// Fallback: Build MCP server specs using npm-style name@version resolution.
-    ///
-    /// Used when registry resolution fails or is not available.
-    fn build_mcp_servers_npm_fallback(
-        &self,
-        name: &str,
-        version: Option<&str>,
-        entry: &McpConfigEntry,
-    ) -> anyhow::Result<Vec<McpResolvedServer>> {
-        let runtime = entry.runtime.as_deref().unwrap_or(DEFAULT_RUNTIME);
-        let command = runtime.to_string();
-
-        let resolved_version = version.unwrap_or(DEFAULT_VERSION);
-        let mut args = vec![format!("{}@{}", name, resolved_version)];
-        args.extend(entry.args.clone());
-
-        Ok(vec![McpResolvedServer::stdio(
-            name.to_string(),
-            command,
-            args,
-            entry.env.clone(),
-        )])
-    }
-
+    /// Delegates to SourceResolver for source inference and normalization.
     fn resolve_name_and_source(
         &self,
         input: &str,
         source: Option<&str>,
         registry: Option<&str>,
-    ) -> anyhow::Result<ResolvedNameAndSource> {
-        let mut warnings = Vec::new();
-
-        if let Some(explicit) = source {
-            let (normalized, normalized_warning) = self.normalize_explicit_source(explicit)?;
-            if let Some(warning) = normalized_warning {
-                warnings.push(warning);
-            }
-            if registry.is_some() {
-                warnings.push("Ignoring --registry because --source was provided.".to_string());
-            }
-            let is_registry = normalized.starts_with("registry:");
-            return Ok(ResolvedNameAndSource {
-                name: input.to_string(),
-                source: normalized,
-                source_is_registry: is_registry,
-                source_explicit: true,
-                warnings,
-            });
-        }
-
-        if let Some(inferred) = self.infer_local_source(input) {
-            return Ok(inferred);
-        }
-
-        // Check for MCPB URL before git (MCPB takes priority for .mcpb URLs)
-        if let Some(inferred) = self.infer_mcpb_source(input) {
-            return Ok(inferred);
-        }
-
-        if let Some(inferred) = self.infer_git_source(input) {
-            return Ok(inferred);
-        }
-
-        let source = if let Some(selected) = registry {
-            format!("registry:{}/{}", selected, input)
-        } else {
-            format!("registry:{}", input)
-        };
-
-        Ok(ResolvedNameAndSource {
-            name: input.to_string(),
-            source,
-            source_is_registry: true,
-            source_explicit: registry.is_some(),
-            warnings,
-        })
-    }
-
-    fn infer_local_source(&self, input: &str) -> Option<ResolvedNameAndSource> {
-        if !is_local_path(input, &self.project_root) {
-            return None;
-        }
-        let name = derive_name_from_path(input).ok()?;
-        Some(ResolvedNameAndSource {
-            name,
-            source: format!("local:{}", input),
-            source_is_registry: false,
-            source_explicit: false,
-            warnings: Vec::new(),
-        })
-    }
-
-    fn infer_git_source(&self, input: &str) -> Option<ResolvedNameAndSource> {
-        if !is_git_like(input) {
-            return None;
-        }
-        let source = normalize_git_source(input);
-        let name = derive_name_from_git_source(&source).ok()?;
-        Some(ResolvedNameAndSource {
-            name,
-            source,
-            source_is_registry: false,
-            source_explicit: false,
-            warnings: Vec::new(),
-        })
-    }
-
-    fn infer_mcpb_source(&self, input: &str) -> Option<ResolvedNameAndSource> {
-        if !is_mcpb_url(input) {
-            return None;
-        }
-        let source = normalize_mcpb_source(input)?;
-        let name = derive_name_from_mcpb_url(input).ok()?;
-        Some(ResolvedNameAndSource {
-            name,
-            source,
-            source_is_registry: false,
-            source_explicit: false,
-            warnings: Vec::new(),
-        })
-    }
-
-    fn normalize_explicit_source(&self, source: &str) -> anyhow::Result<(String, Option<String>)> {
-        if source.starts_with("registry:")
-            || source.starts_with("local:")
-            || source.starts_with("github:")
-            || source.starts_with("git:")
-            || source.starts_with("mcpb:")
-        {
-            return Ok((source.to_string(), None));
-        }
-
-        if is_local_path(source, &self.project_root) {
-            let normalized = format!("local:{}", source);
-            return Ok((
-                normalized.clone(),
-                Some(format!(
-                    "Normalized source '{}' to '{}'.",
-                    source, normalized
-                )),
-            ));
-        }
-
-        // Check for MCPB URL before git (MCPB takes priority for .mcpb URLs)
-        if is_mcpb_url(source)
-            && let Some(normalized) = normalize_mcpb_source(source)
-        {
-            return Ok((
-                normalized.clone(),
-                Some(format!(
-                    "Normalized source '{}' to '{}'.",
-                    source, normalized
-                )),
-            ));
-        }
-
-        if is_git_like(source) {
-            let normalized = normalize_git_source(source);
-            return Ok((
-                normalized.clone(),
-                Some(format!(
-                    "Normalized source '{}' to '{}'.",
-                    source, normalized
-                )),
-            ));
-        }
-
-        anyhow::bail!(
-            "Invalid source format: must be 'registry:', 'local:', 'github:', 'git:', 'mcpb:', a path, or a git URL"
-        )
+    ) -> anyhow::Result<ResolvedInput> {
+        let resolver = self.create_source_resolver()?;
+        resolver.resolve_input(input, source, registry)
     }
 
     fn registry_warnings(
@@ -1136,19 +719,7 @@ impl InstallCommand {
         if !source_is_registry || source_explicit {
             return Ok(Vec::new());
         }
-        let global_store = ConfigStore::from_paths(
-            ConfigScope::Global,
-            self.global_config_dir.clone(),
-            self.project_root.clone(),
-        );
-        let project_store = ConfigStore::from_paths(
-            ConfigScope::PerProjectShared,
-            self.global_config_dir.clone(),
-            self.project_root.clone(),
-        );
-        let global = global_store.load()?;
-        let project = project_store.load()?;
-        let merged = merge_configs(Some(global), Some(project), &self.project_root)?;
+        let merged = self.ctx.merged_config()?;
         if merged.registry.len() > 1 {
             return Ok(vec![
                 "Multiple registries are configured; use --registry or an explicit registry source."
@@ -1165,19 +736,7 @@ impl InstallCommand {
         let registry_key = source
             .strip_prefix("registry:")
             .and_then(|value| value.split('/').next());
-        let global_store = ConfigStore::from_paths(
-            ConfigScope::Global,
-            self.global_config_dir.clone(),
-            self.project_root.clone(),
-        );
-        let project_store = ConfigStore::from_paths(
-            ConfigScope::PerProjectShared,
-            self.global_config_dir.clone(),
-            self.project_root.clone(),
-        );
-        let global = global_store.load()?;
-        let project = project_store.load()?;
-        let merged = merge_configs(Some(global), Some(project), &self.project_root)?;
+        let merged = self.ctx.merged_config()?;
         let entry = registry_key
             .and_then(|key| merged.registry.get(key))
             .or_else(|| {
@@ -1195,78 +754,6 @@ impl InstallCommand {
             crate::registry::capabilities_for(&config).supports_version_pinning,
         ))
     }
-}
-
-#[derive(Debug)]
-struct ResolvedNameAndSource {
-    name: String,
-    source: String,
-    source_is_registry: bool,
-    source_explicit: bool,
-    warnings: Vec<String>,
-}
-
-fn is_local_path(input: &str, project_root: &Path) -> bool {
-    if input.starts_with("./")
-        || input.starts_with("../")
-        || input.starts_with('/')
-        || input.starts_with("~/")
-    {
-        return true;
-    }
-    project_root.join(input).exists()
-}
-
-fn is_git_like(input: &str) -> bool {
-    input.starts_with("http://")
-        || input.starts_with("https://")
-        || input.starts_with("git://")
-        || input.starts_with("git+")
-        || input.starts_with("github:")
-        || input.starts_with("git:")
-        || input.starts_with("git@")
-}
-
-fn normalize_git_source(input: &str) -> String {
-    if let Some(stripped) = input.strip_prefix("git+") {
-        return format!("git:{}", stripped);
-    }
-    if input.starts_with("http://")
-        || input.starts_with("https://")
-        || input.starts_with("git://")
-        || input.starts_with("git@")
-    {
-        return format!("git:{}", input);
-    }
-    input.to_string()
-}
-
-fn derive_name_from_path(input: &str) -> anyhow::Result<String> {
-    let trimmed = input.trim_end_matches('/');
-    let file_name = Path::new(trimmed)
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Invalid path for skill name: {}", input))?;
-    Ok(file_name.to_string_lossy().to_string())
-}
-
-fn derive_name_from_git_source(source: &str) -> anyhow::Result<String> {
-    let raw = source
-        .strip_prefix("git:")
-        .or_else(|| source.strip_prefix("github:"))
-        .unwrap_or(source)
-        .trim_end_matches('/');
-    let segment = raw
-        .rsplit('/')
-        .next()
-        .unwrap_or(raw)
-        .rsplit(':')
-        .next()
-        .unwrap_or(raw);
-    let name = segment.strip_suffix(".git").unwrap_or(segment);
-    if name.is_empty() {
-        anyhow::bail!("Invalid git source for skill name: {}", source);
-    }
-    Ok(name.to_string())
 }
 
 fn resolve_transport(
@@ -1450,8 +937,8 @@ source = "github:anthropics/skills"
         // Verify config was created
         let config_store = ConfigStore::from_paths(
             ConfigScope::PerProjectShared,
-            cmd.home_dir.parent().unwrap().join("config"),
-            cmd.project_root.clone(),
+            cmd.home_dir().parent().unwrap().join("config"),
+            cmd.project_root().to_path_buf(),
         );
         let config = config_store.load().unwrap();
         assert!(config.mcp.contains_key("demo-mcp"));
@@ -1538,8 +1025,8 @@ Test instructions."#,
 
         let config_store = ConfigStore::from_paths(
             ConfigScope::PerProjectShared,
-            cmd.home_dir.parent().unwrap().join("config"),
-            cmd.project_root.clone(),
+            cmd.home_dir().parent().unwrap().join("config"),
+            cmd.project_root().to_path_buf(),
         );
         let config = config_store.load().unwrap();
         let entry = config.skill.get("demo-skill").unwrap();
@@ -1570,8 +1057,8 @@ Test instructions."#,
 
         let config_store = ConfigStore::from_paths(
             ConfigScope::PerProjectShared,
-            cmd.home_dir.parent().unwrap().join("config"),
-            cmd.project_root.clone(),
+            cmd.home_dir().parent().unwrap().join("config"),
+            cmd.project_root().to_path_buf(),
         );
         let config = config_store.load().unwrap();
         let entry = config.skill.get("demo-skill").unwrap();
@@ -1638,6 +1125,6 @@ Test instructions."#,
 
         let cmd =
             InstallCommand::with_defaults_from_paths(home, project, state, config_dir).unwrap();
-        assert_eq!(cmd.link_mode, LinkMode::Copy);
+        assert_eq!(cmd.link_mode(), LinkMode::Copy);
     }
 }

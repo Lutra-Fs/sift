@@ -4,10 +4,12 @@
 //! and other sift operations. These commands are designed to be called by
 //! CLI, TUI, and GUI frontends.
 
+pub mod context;
 pub mod install;
 pub mod registry;
 pub mod uninstall;
 
+pub use context::InstallContext;
 pub use install::{InstallCommand, InstallOptions, InstallReport, InstallTarget};
 pub use registry::{
     AddOptions as RegistryAddOptions, ListOptions as RegistryListOptions, RegistryCommand,

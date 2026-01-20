@@ -16,6 +16,7 @@ pub mod codex;
 pub mod droid;
 pub mod gemini_cli;
 pub mod opencode;
+pub mod registry;
 pub mod vscode;
 
 /// Client configuration from sift.toml
@@ -179,7 +180,7 @@ pub trait Client: Send + Sync {
     fn capabilities(&self) -> ClientCapabilities;
 }
 
-pub trait ClientAdapter: Send + Sync {
+pub trait ClientAdapter: Send + Sync + std::fmt::Debug {
     fn id(&self) -> &'static str;
     fn capabilities(&self) -> ClientCapabilities;
 

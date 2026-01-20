@@ -338,6 +338,438 @@ mod resolve_with_metadata_tests {
     }
 }
 
+mod input_inference_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_test_resolver_with_path(project_root: PathBuf) -> SourceResolver {
+        SourceResolver::new(PathBuf::from("/tmp/state"), project_root, HashMap::new())
+    }
+
+    #[test]
+    fn infer_local_source_from_relative_path() {
+        let resolver = create_test_resolver();
+        let result = resolver.infer_input("./my-skill").unwrap();
+
+        assert_eq!(result.name, "my-skill");
+        assert_eq!(result.source, "local:./my-skill");
+        assert!(!result.source_is_registry);
+        assert!(!result.source_explicit);
+    }
+
+    #[test]
+    fn infer_local_source_from_absolute_path() {
+        let resolver = create_test_resolver();
+        let result = resolver.infer_input("/absolute/path/my-skill").unwrap();
+
+        assert_eq!(result.name, "my-skill");
+        assert_eq!(result.source, "local:/absolute/path/my-skill");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_local_source_from_home_relative_path() {
+        let resolver = create_test_resolver();
+        let result = resolver.infer_input("~/skills/my-skill").unwrap();
+
+        assert_eq!(result.name, "my-skill");
+        assert_eq!(result.source, "local:~/skills/my-skill");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_local_source_from_parent_relative_path() {
+        let resolver = create_test_resolver();
+        let result = resolver.infer_input("../other-project/skill").unwrap();
+
+        assert_eq!(result.name, "skill");
+        assert_eq!(result.source, "local:../other-project/skill");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_local_source_from_existing_directory() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().to_path_buf();
+        std::fs::create_dir_all(project.join("my-plugin")).unwrap();
+
+        let resolver = create_test_resolver_with_path(project);
+        let result = resolver.infer_input("my-plugin").unwrap();
+
+        assert_eq!(result.name, "my-plugin");
+        assert_eq!(result.source, "local:my-plugin");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_git_source_from_https_url() {
+        let resolver = create_test_resolver();
+        let result = resolver.infer_input("https://github.com/org/repo").unwrap();
+
+        assert_eq!(result.name, "repo");
+        assert_eq!(result.source, "git:https://github.com/org/repo");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_git_source_from_git_plus_prefix() {
+        let resolver = create_test_resolver();
+        let result = resolver
+            .infer_input("git+https://github.com/org/repo")
+            .unwrap();
+
+        assert_eq!(result.name, "repo");
+        assert_eq!(result.source, "git:https://github.com/org/repo");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_git_source_from_github_prefix() {
+        let resolver = create_test_resolver();
+        let result = resolver.infer_input("github:org/repo").unwrap();
+
+        assert_eq!(result.name, "repo");
+        assert_eq!(result.source, "github:org/repo");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_git_source_from_ssh_url() {
+        let resolver = create_test_resolver();
+        let result = resolver.infer_input("git@github.com:org/repo.git").unwrap();
+
+        assert_eq!(result.name, "repo");
+        assert_eq!(result.source, "git:git@github.com:org/repo.git");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_mcpb_source_from_url() {
+        let resolver = create_test_resolver();
+        let result = resolver
+            .infer_input("https://example.com/server.mcpb")
+            .unwrap();
+
+        assert_eq!(result.name, "server");
+        assert_eq!(result.source, "mcpb:https://example.com/server.mcpb");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn infer_registry_source_for_plain_name() {
+        let resolver = create_test_resolver();
+        let result = resolver.infer_input("my-package").unwrap();
+
+        assert_eq!(result.name, "my-package");
+        assert_eq!(result.source, "registry:my-package");
+        assert!(result.source_is_registry);
+        assert!(!result.source_explicit);
+    }
+
+    #[test]
+    fn infer_registry_source_with_explicit_registry() {
+        let resolver = create_test_resolver();
+        let result = resolver
+            .infer_input_with_registry("my-package", Some("custom-reg"))
+            .unwrap();
+
+        assert_eq!(result.name, "my-package");
+        assert_eq!(result.source, "registry:custom-reg/my-package");
+        assert!(result.source_is_registry);
+        assert!(result.source_explicit);
+    }
+}
+
+mod normalize_source_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_already_prefixed_sources() {
+        let resolver = create_test_resolver();
+
+        let (source, warning) = resolver.normalize_source("registry:foo").unwrap();
+        assert_eq!(source, "registry:foo");
+        assert!(warning.is_none());
+
+        let (source, warning) = resolver.normalize_source("local:./path").unwrap();
+        assert_eq!(source, "local:./path");
+        assert!(warning.is_none());
+
+        let (source, warning) = resolver.normalize_source("github:org/repo").unwrap();
+        assert_eq!(source, "github:org/repo");
+        assert!(warning.is_none());
+
+        let (source, warning) = resolver
+            .normalize_source("git:https://example.com/repo")
+            .unwrap();
+        assert_eq!(source, "git:https://example.com/repo");
+        assert!(warning.is_none());
+
+        let (source, warning) = resolver
+            .normalize_source("mcpb:https://example.com/file.mcpb")
+            .unwrap();
+        assert_eq!(source, "mcpb:https://example.com/file.mcpb");
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn normalize_local_path_adds_prefix() {
+        let resolver = create_test_resolver();
+
+        let (source, warning) = resolver.normalize_source("./path/to/skill").unwrap();
+        assert_eq!(source, "local:./path/to/skill");
+        assert!(warning.is_some());
+        assert!(warning.unwrap().contains("Normalized"));
+    }
+
+    #[test]
+    fn normalize_absolute_path_adds_prefix() {
+        let resolver = create_test_resolver();
+
+        let (source, warning) = resolver.normalize_source("/absolute/path").unwrap();
+        assert_eq!(source, "local:/absolute/path");
+        assert!(warning.is_some());
+    }
+
+    #[test]
+    fn normalize_git_url_adds_prefix() {
+        let resolver = create_test_resolver();
+
+        let (source, warning) = resolver
+            .normalize_source("https://github.com/org/repo")
+            .unwrap();
+        assert_eq!(source, "git:https://github.com/org/repo");
+        assert!(warning.is_some());
+
+        let (source, warning) = resolver
+            .normalize_source("git+https://github.com/org/repo")
+            .unwrap();
+        assert_eq!(source, "git:https://github.com/org/repo");
+        assert!(warning.is_some());
+    }
+
+    #[test]
+    fn normalize_mcpb_url_adds_prefix() {
+        let resolver = create_test_resolver();
+
+        let (source, warning) = resolver
+            .normalize_source("https://example.com/server.mcpb")
+            .unwrap();
+        assert_eq!(source, "mcpb:https://example.com/server.mcpb");
+        assert!(warning.is_some());
+    }
+
+    #[test]
+    fn normalize_invalid_source_errors() {
+        let resolver = create_test_resolver();
+
+        let result = resolver.normalize_source("invalid-source-format");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid source format"));
+    }
+}
+
+mod resolve_input_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_input_with_explicit_source() {
+        let resolver = create_test_resolver();
+        let result = resolver
+            .resolve_input("my-name", Some("local:./path"), None)
+            .unwrap();
+
+        assert_eq!(result.name, "my-name");
+        assert_eq!(result.source, "local:./path");
+        assert!(!result.source_is_registry);
+        assert!(result.source_explicit);
+    }
+
+    #[test]
+    fn resolve_input_with_source_and_registry_warns() {
+        let resolver = create_test_resolver();
+        let result = resolver
+            .resolve_input("my-name", Some("local:./path"), Some("reg"))
+            .unwrap();
+
+        assert!(!result.warnings.is_empty());
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("Ignoring --registry"))
+        );
+    }
+
+    #[test]
+    fn resolve_input_infers_source_when_none_provided() {
+        let resolver = create_test_resolver();
+        let result = resolver.resolve_input("./my-skill", None, None).unwrap();
+
+        assert_eq!(result.name, "my-skill");
+        assert_eq!(result.source, "local:./my-skill");
+        assert!(!result.source_is_registry);
+    }
+
+    #[test]
+    fn resolve_input_normalizes_explicit_source() {
+        let resolver = create_test_resolver();
+        let result = resolver
+            .resolve_input("my-name", Some("./path"), None)
+            .unwrap();
+
+        assert_eq!(result.source, "local:./path");
+        assert!(!result.warnings.is_empty()); // normalization warning
+    }
+}
+
+mod derive_name_tests {
+    use super::*;
+
+    #[test]
+    fn derive_name_from_path_simple() {
+        let name = derive_name_from_path("./skills/my-skill").unwrap();
+        assert_eq!(name, "my-skill");
+    }
+
+    #[test]
+    fn derive_name_from_path_with_trailing_slash() {
+        let name = derive_name_from_path("./skills/my-skill/").unwrap();
+        assert_eq!(name, "my-skill");
+    }
+
+    #[test]
+    fn derive_name_from_path_absolute() {
+        let name = derive_name_from_path("/absolute/path/skill-name").unwrap();
+        assert_eq!(name, "skill-name");
+    }
+
+    #[test]
+    fn derive_name_from_git_https() {
+        let name = derive_name_from_git_source("git:https://github.com/org/my-repo").unwrap();
+        assert_eq!(name, "my-repo");
+    }
+
+    #[test]
+    fn derive_name_from_git_with_dot_git_suffix() {
+        let name = derive_name_from_git_source("git:https://github.com/org/my-repo.git").unwrap();
+        assert_eq!(name, "my-repo");
+    }
+
+    #[test]
+    fn derive_name_from_github_shorthand() {
+        let name = derive_name_from_git_source("github:org/my-repo").unwrap();
+        assert_eq!(name, "my-repo");
+    }
+
+    #[test]
+    fn derive_name_from_git_trailing_slash() {
+        let name = derive_name_from_git_source("git:https://github.com/org/my-repo/").unwrap();
+        assert_eq!(name, "my-repo");
+    }
+
+    #[test]
+    fn derive_name_from_git_empty_name_errors() {
+        let result = derive_name_from_git_source("git:");
+        assert!(result.is_err());
+    }
+}
+
+mod is_detection_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn is_local_path_detects_relative() {
+        assert!(is_local_path("./path", &PathBuf::from("/tmp")));
+        assert!(is_local_path("../path", &PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn is_local_path_detects_absolute() {
+        assert!(is_local_path("/absolute/path", &PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn is_local_path_detects_home() {
+        assert!(is_local_path("~/path", &PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn is_local_path_detects_existing_directory() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path();
+        std::fs::create_dir_all(project.join("existing-dir")).unwrap();
+
+        assert!(is_local_path("existing-dir", project));
+        assert!(!is_local_path("nonexistent-dir", project));
+    }
+
+    #[test]
+    fn is_git_like_detects_protocols() {
+        assert!(is_git_like("http://example.com/repo"));
+        assert!(is_git_like("https://github.com/org/repo"));
+        assert!(is_git_like("git://github.com/org/repo"));
+        assert!(is_git_like("git+https://github.com/org/repo"));
+        assert!(is_git_like("github:org/repo"));
+        assert!(is_git_like("git:https://github.com/org/repo"));
+        assert!(is_git_like("git@github.com:org/repo"));
+    }
+
+    #[test]
+    fn is_git_like_rejects_non_git() {
+        assert!(!is_git_like("local:./path"));
+        assert!(!is_git_like("registry:foo"));
+        assert!(!is_git_like("plain-name"));
+    }
+}
+
+mod normalize_git_source_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_git_plus_prefix() {
+        assert_eq!(
+            normalize_git_source("git+https://github.com/org/repo"),
+            "git:https://github.com/org/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_https_url() {
+        assert_eq!(
+            normalize_git_source("https://github.com/org/repo"),
+            "git:https://github.com/org/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_git_protocol() {
+        assert_eq!(
+            normalize_git_source("git://github.com/org/repo"),
+            "git:git://github.com/org/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_ssh_url() {
+        assert_eq!(
+            normalize_git_source("git@github.com:org/repo"),
+            "git:git@github.com:org/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_already_prefixed() {
+        assert_eq!(normalize_git_source("github:org/repo"), "github:org/repo");
+        assert_eq!(
+            normalize_git_source("git:https://example.com"),
+            "git:https://example.com"
+        );
+    }
+}
+
 mod resolver_error_tests {
     use super::*;
 

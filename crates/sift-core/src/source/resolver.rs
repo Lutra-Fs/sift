@@ -2,15 +2,34 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
 use crate::git::{GitFetcher, GitSpec};
+use crate::mcpb::{derive_name_from_mcpb_url, is_mcpb_url, normalize_mcpb_source};
 use crate::registry::marketplace::MarketplaceAdapter;
 use crate::registry::{RegistryConfig, RegistryType};
 
 use super::spec::{LocalSpec, McpbSpec, ResolvedSource};
+
+/// Result of resolving user input to a name and source.
+///
+/// Used during install command processing to determine the canonical
+/// name and normalized source string from user-provided input.
+#[derive(Debug, Clone)]
+pub struct ResolvedInput {
+    /// Canonical name for the package (derived from input or path)
+    pub name: String,
+    /// Normalized source string with appropriate prefix
+    pub source: String,
+    /// Whether the source refers to a registry
+    pub source_is_registry: bool,
+    /// Whether the source was explicitly provided (vs inferred)
+    pub source_explicit: bool,
+    /// Any warnings generated during resolution
+    pub warnings: Vec<String>,
+}
 
 /// Metadata about a registry resolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -845,6 +864,298 @@ impl SourceResolver {
 
         Ok(())
     }
+
+    // ========================================================================
+    // Input Resolution Methods
+    // ========================================================================
+    // These methods handle user input resolution for install commands,
+    // determining the canonical name and normalized source from raw input.
+
+    /// Resolve user input to a name and source.
+    ///
+    /// This is the main entry point for resolving install command input.
+    /// It handles:
+    /// - Explicit source: normalizes and uses user-provided source
+    /// - Inferred source: detects source type from input pattern
+    /// - Registry fallback: treats unknown input as registry package name
+    ///
+    /// # Arguments
+    /// * `input` - User-provided input (name or path)
+    /// * `source` - Optional explicit source specification
+    /// * `registry` - Optional registry name for disambiguation
+    pub fn resolve_input(
+        &self,
+        input: &str,
+        source: Option<&str>,
+        registry: Option<&str>,
+    ) -> anyhow::Result<ResolvedInput> {
+        let mut warnings = Vec::new();
+
+        if let Some(explicit) = source {
+            let (normalized, normalized_warning) = self.normalize_source(explicit)?;
+            if let Some(warning) = normalized_warning {
+                warnings.push(warning);
+            }
+            if registry.is_some() {
+                warnings.push("Ignoring --registry because --source was provided.".to_string());
+            }
+            let is_registry = normalized.starts_with("registry:");
+            return Ok(ResolvedInput {
+                name: input.to_string(),
+                source: normalized,
+                source_is_registry: is_registry,
+                source_explicit: true,
+                warnings,
+            });
+        }
+
+        // No explicit source - infer from input
+        let mut result = self.infer_input_with_registry(input, registry)?;
+        result.warnings.extend(warnings);
+        Ok(result)
+    }
+
+    /// Infer source type from input string.
+    ///
+    /// Attempts to detect the source type from the input pattern:
+    /// - Local path patterns (./path, ../path, /path, ~/path)
+    /// - Existing directories in project root
+    /// - MCPB URLs (*.mcpb)
+    /// - Git URLs (https://, git://, git@, github:, etc.)
+    /// - Falls back to registry source for plain names
+    pub fn infer_input(&self, input: &str) -> anyhow::Result<ResolvedInput> {
+        self.infer_input_with_registry(input, None)
+    }
+
+    /// Infer source type from input string with optional registry.
+    pub fn infer_input_with_registry(
+        &self,
+        input: &str,
+        registry: Option<&str>,
+    ) -> anyhow::Result<ResolvedInput> {
+        // Try local path detection
+        if let Some(result) = self.try_infer_local(input) {
+            return Ok(result);
+        }
+
+        // Try MCPB URL detection (before git, as MCPB URLs are also HTTPS)
+        if let Some(result) = self.try_infer_mcpb(input) {
+            return Ok(result);
+        }
+
+        // Try git URL detection
+        if let Some(result) = self.try_infer_git(input) {
+            return Ok(result);
+        }
+
+        // Fall back to registry source
+        let source = if let Some(selected) = registry {
+            format!("registry:{}/{}", selected, input)
+        } else {
+            format!("registry:{}", input)
+        };
+
+        Ok(ResolvedInput {
+            name: input.to_string(),
+            source,
+            source_is_registry: true,
+            source_explicit: registry.is_some(),
+            warnings: Vec::new(),
+        })
+    }
+
+    /// Normalize an explicit source string.
+    ///
+    /// If the source already has a recognized prefix, returns it unchanged.
+    /// Otherwise, attempts to detect and normalize:
+    /// - Local paths → `local:` prefix
+    /// - MCPB URLs → `mcpb:` prefix
+    /// - Git URLs → `git:` prefix
+    ///
+    /// Returns the normalized source and an optional warning message.
+    pub fn normalize_source(&self, source: &str) -> anyhow::Result<(String, Option<String>)> {
+        // Already prefixed sources pass through unchanged
+        if source.starts_with("registry:")
+            || source.starts_with("local:")
+            || source.starts_with("github:")
+            || source.starts_with("git:")
+            || source.starts_with("mcpb:")
+        {
+            return Ok((source.to_string(), None));
+        }
+
+        // Try local path detection
+        if is_local_path(source, &self.project_root) {
+            let normalized = format!("local:{}", source);
+            return Ok((
+                normalized.clone(),
+                Some(format!(
+                    "Normalized source '{}' to '{}'.",
+                    source, normalized
+                )),
+            ));
+        }
+
+        // Try MCPB URL detection (before git)
+        if is_mcpb_url(source)
+            && let Some(normalized) = normalize_mcpb_source(source)
+        {
+            return Ok((
+                normalized.clone(),
+                Some(format!(
+                    "Normalized source '{}' to '{}'.",
+                    source, normalized
+                )),
+            ));
+        }
+
+        // Try git URL detection
+        if is_git_like(source) {
+            let normalized = normalize_git_source(source);
+            return Ok((
+                normalized.clone(),
+                Some(format!(
+                    "Normalized source '{}' to '{}'.",
+                    source, normalized
+                )),
+            ));
+        }
+
+        anyhow::bail!(
+            "Invalid source format: must be 'registry:', 'local:', 'github:', 'git:', 'mcpb:', a path, or a git URL"
+        )
+    }
+
+    /// Get project root path (for testing and external access).
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    // --- Private inference helpers ---
+
+    fn try_infer_local(&self, input: &str) -> Option<ResolvedInput> {
+        if !is_local_path(input, &self.project_root) {
+            return None;
+        }
+        let name = derive_name_from_path(input).ok()?;
+        Some(ResolvedInput {
+            name,
+            source: format!("local:{}", input),
+            source_is_registry: false,
+            source_explicit: false,
+            warnings: Vec::new(),
+        })
+    }
+
+    fn try_infer_git(&self, input: &str) -> Option<ResolvedInput> {
+        if !is_git_like(input) {
+            return None;
+        }
+        let source = normalize_git_source(input);
+        let name = derive_name_from_git_source(&source).ok()?;
+        Some(ResolvedInput {
+            name,
+            source,
+            source_is_registry: false,
+            source_explicit: false,
+            warnings: Vec::new(),
+        })
+    }
+
+    fn try_infer_mcpb(&self, input: &str) -> Option<ResolvedInput> {
+        if !is_mcpb_url(input) {
+            return None;
+        }
+        let source = normalize_mcpb_source(input)?;
+        let name = derive_name_from_mcpb_url(input).ok()?;
+        Some(ResolvedInput {
+            name,
+            source,
+            source_is_registry: false,
+            source_explicit: false,
+            warnings: Vec::new(),
+        })
+    }
+}
+
+// ============================================================================
+// Public Helper Functions
+// ============================================================================
+// These functions are used by the resolver and exported for testing.
+
+/// Check if input looks like a local path.
+///
+/// Returns true if:
+/// - Starts with `./`, `../`, `/`, or `~/`
+/// - Exists as a directory in the project root
+pub fn is_local_path(input: &str, project_root: &Path) -> bool {
+    if input.starts_with("./")
+        || input.starts_with("../")
+        || input.starts_with('/')
+        || input.starts_with("~/")
+    {
+        return true;
+    }
+    project_root.join(input).exists()
+}
+
+/// Check if input looks like a git URL or reference.
+pub fn is_git_like(input: &str) -> bool {
+    input.starts_with("http://")
+        || input.starts_with("https://")
+        || input.starts_with("git://")
+        || input.starts_with("git+")
+        || input.starts_with("github:")
+        || input.starts_with("git:")
+        || input.starts_with("git@")
+}
+
+/// Normalize a git-like input to a git: prefixed source.
+pub fn normalize_git_source(input: &str) -> String {
+    // Convert git+ prefix to git:
+    if let Some(stripped) = input.strip_prefix("git+") {
+        return format!("git:{}", stripped);
+    }
+    // Add git: prefix to raw URLs
+    if input.starts_with("http://")
+        || input.starts_with("https://")
+        || input.starts_with("git://")
+        || input.starts_with("git@")
+    {
+        return format!("git:{}", input);
+    }
+    // Already prefixed or shorthand (github:, git:)
+    input.to_string()
+}
+
+/// Derive a package name from a file path.
+pub fn derive_name_from_path(input: &str) -> anyhow::Result<String> {
+    let trimmed = input.trim_end_matches('/');
+    let file_name = Path::new(trimmed)
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid path for skill name: {}", input))?;
+    Ok(file_name.to_string_lossy().to_string())
+}
+
+/// Derive a package name from a git source string.
+pub fn derive_name_from_git_source(source: &str) -> anyhow::Result<String> {
+    let raw = source
+        .strip_prefix("git:")
+        .or_else(|| source.strip_prefix("github:"))
+        .unwrap_or(source)
+        .trim_end_matches('/');
+    let segment = raw
+        .rsplit('/')
+        .next()
+        .unwrap_or(raw)
+        .rsplit(':')
+        .next()
+        .unwrap_or(raw);
+    let name = segment.strip_suffix(".git").unwrap_or(segment);
+    if name.is_empty() {
+        anyhow::bail!("Invalid git source for skill name: {}", source);
+    }
+    Ok(name.to_string())
 }
 
 #[cfg(test)]
