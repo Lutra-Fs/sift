@@ -1,5 +1,6 @@
 //! Deploy coordination: scope decisions and client traversal.
 
+pub mod executor;
 pub mod scope;
 
 pub use scope::{
