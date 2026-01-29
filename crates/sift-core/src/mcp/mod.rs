@@ -1,6 +1,7 @@
 //! MCP (Model Context Protocol) server management
 
 pub mod builder;
+pub mod installer;
 pub mod schema;
 pub mod spec;
 
