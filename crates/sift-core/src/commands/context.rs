@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 use crate::client::ClientContext;
 use crate::client::registry::ClientRegistry;
 use crate::config::{ConfigStore, SiftConfig, merge_configs};
+use crate::context::AppContext;
 use crate::fs::LinkMode;
 use crate::git::GitFetcher;
 use crate::lockfile::LockfileService;
@@ -104,6 +105,21 @@ impl InstallContext {
         ctx.link_mode = config.link_mode.unwrap_or(LinkMode::Auto);
 
         Ok(ctx)
+    }
+
+    /// Create an InstallContext from an AppContext.
+    ///
+    /// This is the preferred way to create InstallContext when using
+    /// the unified AppContext pattern.
+    pub fn from_app_context(app_ctx: AppContext) -> Self {
+        Self {
+            home_dir: app_ctx.home_dir().to_path_buf(),
+            project_root: app_ctx.project_root().to_path_buf(),
+            state_dir: app_ctx.state_dir().to_path_buf(),
+            global_config_dir: app_ctx.global_config_dir().to_path_buf(),
+            link_mode: app_ctx.link_mode(),
+            config_cache: OnceLock::new(),
+        }
     }
 
     // --- Accessors ---

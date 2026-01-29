@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::client::ClientAdapter;
 use crate::client::ClientContext;
 use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
+use crate::context::AppContext;
 use crate::fs::LinkMode;
 use crate::mcp::McpServerBuilder;
 use crate::orchestration::scope::{
@@ -273,6 +274,16 @@ impl InstallCommand {
         Ok(Self {
             ctx: InstallContext::from_paths(home_dir, project_root, state_dir, global_config_dir)?,
         })
+    }
+
+    /// Create from AppContext (preferred).
+    ///
+    /// This is the preferred constructor when using the unified AppContext pattern.
+    /// CLI/TUI/GUI frontends should create an AppContext once and pass it here.
+    pub fn from_context(ctx: AppContext) -> Self {
+        Self {
+            ctx: InstallContext::from_app_context(ctx),
+        }
     }
 
     // --- Accessors for backward compatibility ---
@@ -809,6 +820,7 @@ fn parse_key_values(pairs: &[String], label: &str) -> anyhow::Result<HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::AppContext;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -1126,5 +1138,28 @@ Test instructions."#,
         let cmd =
             InstallCommand::with_defaults_from_paths(home, project, state, config_dir).unwrap();
         assert_eq!(cmd.link_mode(), LinkMode::Copy);
+    }
+
+    #[test]
+    fn test_install_command_from_context() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+
+        let app_ctx = AppContext::with_global_config_dir(
+            home.clone(),
+            project.clone(),
+            temp.path().join("state"),
+            temp.path().join("config"),
+            LinkMode::Auto,
+        );
+
+        let cmd = InstallCommand::from_context(app_ctx);
+
+        assert_eq!(cmd.home_dir(), &home);
+        assert_eq!(cmd.project_root(), &project);
+        assert_eq!(cmd.link_mode(), LinkMode::Auto);
     }
 }
