@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 use sift_core::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
-use sift_core::orchestration::{InstallOutcome, InstallService};
+use sift_core::deploy::{InstallOutcome, InstallService};
 use sift_core::types::ConfigScope;
 
 #[test]

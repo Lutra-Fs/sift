@@ -1,7 +1,6 @@
 //! Uninstall/remove orchestration for config entries.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use anyhow::Context;
 use serde_json::{Map, Value};
@@ -9,9 +8,10 @@ use serde_json::{Map, Value};
 use crate::client::{ClientAdapter, ClientContext};
 use crate::config::ConfigStore;
 use crate::config::client_config::{self, ConfigFormat};
+use crate::deploy::install::resolve_plan_path;
+use crate::deploy::service::{UninstallOutcome, UninstallService};
+use crate::fs::remove_path_if_exists;
 use crate::lockfile::LockfileService;
-use crate::orchestration::install::resolve_plan_path;
-use crate::orchestration::service::{UninstallOutcome, UninstallService};
 
 #[derive(Debug, Default)]
 pub struct UninstallReport {
@@ -163,23 +163,4 @@ fn filter_managed_entries(
         }
     }
     desired
-}
-
-/// Remove a path (file or directory) if it exists.
-///
-/// Returns `Ok(true)` if something was removed, `Ok(false)` if path didn't exist.
-pub fn remove_path_if_exists(path: &Path) -> anyhow::Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let metadata = std::fs::symlink_metadata(path)
-        .with_context(|| format!("Failed to read metadata: {}", path.display()))?;
-    if metadata.is_dir() {
-        std::fs::remove_dir_all(path)
-            .with_context(|| format!("Failed to remove directory: {}", path.display()))?;
-    } else {
-        std::fs::remove_file(path)
-            .with_context(|| format!("Failed to remove file: {}", path.display()))?;
-    }
-    Ok(true)
 }

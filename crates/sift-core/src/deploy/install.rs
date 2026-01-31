@@ -7,13 +7,12 @@ use anyhow::Context;
 use crate::client::{ClientAdapter, ClientContext, PathRoot};
 use crate::config::client_config::{self, ConfigFormat};
 use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
-use crate::fs::LinkMode;
+use crate::deploy::scope::ScopeResolution;
+use crate::deploy::service::{InstallOutcome, InstallService};
+use crate::fs::{LinkMode, remove_path_if_exists};
 use crate::git::{FetchResult, GitFetcher, ensure_git_exclude};
 use crate::lockfile::LockfileService;
 use crate::lockfile::{LockedMcpServer, ResolvedOrigin};
-use crate::orchestration::scope::ScopeResolution;
-use crate::orchestration::service::{InstallOutcome, InstallService};
-use crate::orchestration::uninstall::remove_path_if_exists;
 use crate::skills::installer::{GitSkillMetadata, SkillInstallResult, SkillInstaller};
 use crate::source::{RegistryMetadata, ResolvedSource, SourceResolver};
 

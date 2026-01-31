@@ -6,13 +6,13 @@ use sift_core::client::ClientAdapter;
 use sift_core::client::ClientContext;
 use sift_core::client::claude_code::ClaudeCodeClient;
 use sift_core::config::{ConfigStore, McpConfigEntry};
+use sift_core::deploy::InstallOrchestrator;
+use sift_core::deploy::install::InstallMcpRequest;
+use sift_core::deploy::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::fs::LinkMode;
 use sift_core::git::GitFetcher;
 use sift_core::lockfile::LockfileService;
 use sift_core::mcp::spec::McpResolvedServer;
-use sift_core::orchestration::InstallOrchestrator;
-use sift_core::orchestration::install::InstallMcpRequest;
-use sift_core::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use sift_core::source::SourceResolver;
 use sift_core::types::ConfigScope;
 

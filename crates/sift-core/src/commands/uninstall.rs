@@ -7,10 +7,10 @@ use std::path::PathBuf;
 use crate::client::claude_code::ClaudeCodeClient;
 use crate::client::{ClientAdapter, ClientContext};
 use crate::config::{ConfigStore, merge_configs};
+use crate::deploy::UninstallOrchestrator;
+use crate::deploy::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use crate::fs::LinkMode;
 use crate::lockfile::{LockfileService, LockfileStore};
-use crate::orchestration::UninstallOrchestrator;
-use crate::orchestration::scope::{RepoStatus, ResourceKind, ScopeRequest, resolve_scope};
 use crate::types::ConfigScope;
 
 /// What to uninstall: MCP server or skill
@@ -296,10 +296,8 @@ impl UninstallCommand {
                 let resolution =
                     resolve_scope(resource, ScopeRequest::Explicit(requested), support, repo)?;
                 match resolution {
-                    crate::orchestration::scope::ScopeResolution::Apply(decision) => {
-                        Ok(decision.scope)
-                    }
-                    crate::orchestration::scope::ScopeResolution::Skip { warning } => {
+                    crate::deploy::scope::ScopeResolution::Apply(decision) => Ok(decision.scope),
+                    crate::deploy::scope::ScopeResolution::Skip { warning } => {
                         anyhow::bail!("{warning}")
                     }
                 }
@@ -315,7 +313,7 @@ impl UninstallCommand {
     ) -> anyhow::Result<Option<ConfigScope>> {
         for scope in all_scopes() {
             let store = self.create_config_store(scope)?;
-            let service = crate::orchestration::UninstallService::new(store);
+            let service = crate::deploy::UninstallService::new(store);
             let exists = match options.target {
                 UninstallTarget::Mcp => service.contains_mcp(&options.name)?,
                 UninstallTarget::Skill => service.contains_skill(&options.name)?,

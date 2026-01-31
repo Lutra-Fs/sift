@@ -1,4 +1,4 @@
-use sift_core::orchestration::scope::{
+use sift_core::deploy::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, ScopeSupport, resolve_scope,
 };
 use sift_core::types::ConfigScope;

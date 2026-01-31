@@ -10,12 +10,12 @@ use crate::client::ClientAdapter;
 use crate::client::ClientContext;
 use crate::config::{ConfigStore, McpConfigEntry, SkillConfigEntry};
 use crate::context::AppContext;
-use crate::fs::LinkMode;
-use crate::mcp::McpServerBuilder;
-use crate::orchestration::scope::{
+use crate::deploy::scope::{
     RepoStatus, ResourceKind, ScopeRequest, ScopeResolution, resolve_scope,
 };
-use crate::orchestration::{InstallMcpRequest, InstallOrchestrator};
+use crate::deploy::{InstallMcpRequest, InstallOrchestrator};
+use crate::fs::LinkMode;
+use crate::mcp::McpServerBuilder;
 use crate::source::{ResolvedInput, SourceResolver};
 use crate::types::ConfigScope;
 
@@ -474,10 +474,7 @@ impl InstallCommand {
         warnings.extend(report.warnings);
         Ok(InstallReport {
             name,
-            changed: matches!(
-                report.outcome,
-                crate::orchestration::InstallOutcome::Changed
-            ),
+            changed: matches!(report.outcome, crate::deploy::InstallOutcome::Changed),
             applied: report.applied,
             warnings,
         })
@@ -669,10 +666,7 @@ impl InstallCommand {
 
         Ok(InstallReport {
             name: name.to_string(),
-            changed: matches!(
-                report.outcome,
-                crate::orchestration::InstallOutcome::Changed
-            ),
+            changed: matches!(report.outcome, crate::deploy::InstallOutcome::Changed),
             applied: report.applied,
             warnings: report.warnings,
         })
