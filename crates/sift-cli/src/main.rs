@@ -6,10 +6,13 @@
 //!   sift install ...  # CLI operations
 //!   sift --gui        # Launch GUI
 
+mod interactive;
+
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use sift_core::commands::context::InstallContext;
 use sift_core::commands::{
     InstallCommand, InstallOptions, InstallTarget, StatusCommand, StatusOptions, UninstallCommand,
     UninstallOptions,
@@ -20,6 +23,8 @@ use sift_core::commands::{
 use sift_core::registry::RegistryType;
 use sift_core::status::{EntryState, McpServerStatus, SkillStatus, SystemStatus};
 use sift_core::types::ConfigScope;
+
+use crate::interactive::{InteractiveFlow, PrefilledOptions};
 
 #[derive(Parser)]
 #[command(name = "sift")]
@@ -240,9 +245,19 @@ fn run_cli(command: Commands) -> Result<()> {
 #[derive(Args)]
 struct InstallArgs {
     /// What to install (mcp or skill)
-    kind: String,
+    ///
+    /// Required unless --interactive is used
+    kind: Option<String>,
     /// Name/ID of the package to install
-    name: String,
+    ///
+    /// Required unless --interactive is used
+    name: Option<String>,
+    /// Interactive mode - prompts for missing options
+    #[arg(short, long)]
+    interactive: bool,
+    /// Skip all confirmation prompts (for CI/CD)
+    #[arg(short = 'y', long)]
+    yes: bool,
     /// Source specification (e.g., "registry:name" or "local:/path")
     #[arg(long, short)]
     source: Option<String>,
@@ -273,17 +288,38 @@ struct InstallArgs {
     /// Stdio command for MCP servers (after --)
     #[arg(last = true)]
     command: Vec<String>,
+    /// Target clients (whitelist) - only deploy to these clients
+    #[arg(long = "target", value_name = "CLIENT")]
+    targets: Vec<String>,
+    /// Ignore clients (blacklist) - deploy to all except these
+    #[arg(long = "ignore-target", value_name = "CLIENT")]
+    ignore_targets: Vec<String>,
     /// Output format
     #[arg(short = 'o', long, default_value = "table")]
     format: OutputFormat,
 }
 
 fn run_install(args: InstallArgs) -> Result<()> {
+    // Handle interactive mode
+    if args.interactive {
+        return run_install_interactive(args);
+    }
+
+    // Non-interactive mode requires kind and name
+    let kind = args
+        .kind
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Missing required argument: kind (mcp or skill)"))?;
+    let name = args
+        .name
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Missing required argument: name"))?;
+
     // Parse target type
-    let target = match args.kind.to_lowercase().as_str() {
+    let target = match kind.to_lowercase().as_str() {
         "mcp" => InstallTarget::Mcp,
         "skill" => InstallTarget::Skill,
-        _ => anyhow::bail!("Unknown install type: {}. Use 'mcp' or 'skill'", args.kind),
+        _ => anyhow::bail!("Unknown install type: {}. Use 'mcp' or 'skill'", kind),
     };
 
     // Parse scope if provided
@@ -294,7 +330,7 @@ fn run_install(args: InstallArgs) -> Result<()> {
     };
 
     // Build options
-    let (resolved_name, parsed_version) = split_name_and_version(&args.name)?;
+    let (resolved_name, parsed_version) = split_name_and_version(name)?;
     let mut options = match target {
         InstallTarget::Mcp => InstallOptions::mcp(resolved_name),
         InstallTarget::Skill => InstallOptions::skill(resolved_name),
@@ -333,18 +369,116 @@ fn run_install(args: InstallArgs) -> Result<()> {
     if !args.command.is_empty() {
         options = options.with_command(&args.command);
     }
+    if !args.targets.is_empty() {
+        options = options.with_targets(&args.targets);
+    }
+    if !args.ignore_targets.is_empty() {
+        options = options.with_ignore_targets(&args.ignore_targets);
+    }
 
     // Create and execute install command
     let cmd = InstallCommand::with_defaults()?;
     let report = cmd.execute(&options)?;
 
-    // Print result based on format
+    // Print result
+    print_install_result(&args, &report)?;
+
+    Ok(())
+}
+
+fn run_install_interactive(args: InstallArgs) -> Result<()> {
+    // Load context to get registries and client registry
+    let ctx = InstallContext::with_defaults()?;
+    let registries = ctx.registries()?;
+    let client_registry = ctx.client_registry();
+
+    // Parse pre-filled options from CLI args
+    let kind = args
+        .kind
+        .as_ref()
+        .and_then(|k| match k.to_lowercase().as_str() {
+            "mcp" => Some(InstallTarget::Mcp),
+            "skill" => Some(InstallTarget::Skill),
+            _ => None,
+        });
+
+    let scope = args.scope.as_ref().and_then(|s| parse_scope(s).ok());
+
+    let targets = if !args.targets.is_empty() {
+        Some(args.targets.clone())
+    } else {
+        None
+    };
+
+    let prefilled = PrefilledOptions {
+        kind,
+        name: args.name.clone(),
+        registry: args.registry.clone(),
+        scope,
+        targets,
+        force: args.force,
+        yes: args.yes,
+    };
+
+    // Run interactive flow
+    let mut flow = InteractiveFlow::new(registries, client_registry, prefilled);
+    let result = flow.collect()?;
+
+    if !result.confirmed {
+        println!("Installation cancelled.");
+        return Ok(());
+    }
+
+    // Apply additional options that aren't collected interactively
+    let mut options = result.options;
+
+    if let Some(s) = &args.source {
+        options = options.with_source(s);
+    }
+    if let Some(r) = &args.runtime {
+        options = options.with_runtime(r);
+    }
+    if let Some(t) = &args.transport {
+        options = options.with_transport(t);
+    }
+    if let Some(u) = &args.url {
+        options = options.with_url(u);
+    }
+    for pair in &args.env {
+        options = options.with_env(pair);
+    }
+    for pair in &args.headers {
+        options = options.with_header(pair);
+    }
+    if !args.command.is_empty() {
+        options = options.with_command(&args.command);
+    }
+    if !args.ignore_targets.is_empty() {
+        options = options.with_ignore_targets(&args.ignore_targets);
+    }
+
+    // Execute install
+    let cmd = InstallCommand::with_defaults()?;
+    let report = cmd.execute(&options)?;
+
+    // Print result
+    print_install_result(&args, &report)?;
+
+    Ok(())
+}
+
+fn print_install_result(
+    args: &InstallArgs,
+    report: &sift_core::commands::InstallReport,
+) -> Result<()> {
+    let kind = args.kind.as_deref().unwrap_or("package");
+
     match args.format {
         OutputFormat::Table => {
             if report.changed {
-                println!("✓ Installed {} '{}'", args.kind, report.name);
+                println!("✓ Installed {} '{}'", kind, report.name);
             } else {
-                println!("• {} '{}' is already installed", args.kind, report.name);
+                println!("• {} '{}' is already installed", kind, report.name);
             }
 
             if report.applied {
@@ -358,7 +492,7 @@ fn run_install(args: InstallArgs) -> Result<()> {
         OutputFormat::Json => {
             let output = serde_json::json!({
                 "name": report.name,
-                "kind": args.kind,
+                "kind": kind,
                 "changed": report.changed,
                 "applied": report.applied,
                 "warnings": report.warnings,
@@ -1191,6 +1325,86 @@ mod tests {
     #[test]
     fn registry_remove_with_format_json_parses() {
         let args = ["sift", "registry", "remove", "test-reg", "--format", "json"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_interactive_flag_parses() {
+        let args = ["sift", "install", "-i"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_interactive_with_partial_args_parses() {
+        let args = [
+            "sift",
+            "install",
+            "--interactive",
+            "--scope",
+            "global",
+            "--registry",
+            "official",
+        ];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_interactive_with_kind_parses() {
+        let args = ["sift", "install", "skill", "-i"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_yes_flag_parses() {
+        let args = ["sift", "install", "mcp", "test-mcp", "-y"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_interactive_and_yes_flags_parse() {
+        let args = ["sift", "install", "-i", "-y"];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_target_clients_flag_parses() {
+        let args = [
+            "sift",
+            "install",
+            "mcp",
+            "test-mcp",
+            "--target",
+            "claude-code",
+            "--target",
+            "vscode",
+        ];
+
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn install_ignore_target_flag_parses() {
+        let args = [
+            "sift",
+            "install",
+            "skill",
+            "test-skill",
+            "--ignore-target",
+            "codex",
+        ];
 
         let cli = Cli::try_parse_from(args).unwrap();
         assert!(cli.command.is_some());
